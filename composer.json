@@ -1,0 +1,15 @@
+{
+    "name": "alfacode-team/hkm-plugin-tenancy",
+    "description": "HKM Kernel plugin providing 'tenancy.routing'.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["hkm-kernel", "plugin", "php", "tenancy.routing"],
+    "require": {
+        "php": ">=8.4"
+    },
+    "autoload": {
+        "psr-4": {
+            "Plugins\\Tenancy\\": ""
+        }
+    }
+}
