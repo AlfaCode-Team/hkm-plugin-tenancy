@@ -8,17 +8,17 @@
  *   @var string $csrf     CSRF token (HMAC, bound to the session cookie).
  *   @var string $view     Rendered child-view HTML (injected by the renderer).
  */
-$title   = $title   ?? 'Tenancy';
+$title   = $title   ?? trans('tenancy::tenancy.nav.brand');
 $apiBase = $apiBase ?? '/ajx';
 $csrf    = $csrf    ?? '';
 ?>
 <!DOCTYPE html>
-<html lang="en">
+<html lang="<?= htmlspecialchars(lang_locale(), ENT_QUOTES, 'UTF-8') ?>">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="csrf-token" content="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
-    <title><?= htmlspecialchars($title, ENT_QUOTES, 'UTF-8') ?> · Tenancy</title>
+    <title><?= htmlspecialchars($title, ENT_QUOTES, 'UTF-8') ?> · <?= htmlspecialchars(trans('tenancy::tenancy.nav.brand'), ENT_QUOTES, 'UTF-8') ?></title>
     <style>
         :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --fg:#e2e8f0; --muted:#94a3b8;
                 --accent:#6366f1; --danger:#ef4444; --ok:#22c55e; --warn:#f59e0b; }
@@ -65,9 +65,9 @@ $csrf    = $csrf    ?? '';
     <header>
         <h1>Tenancy</h1>
         <nav>
-            <a href="/tenants">Your tenants</a>
-            <a href="/tenants/manage">Manage</a>
-            <a href="/tenant/hosts">Hosts</a>
+            <a href="/tenants"><?= htmlspecialchars(trans('tenancy::tenancy.nav.tenants'), ENT_QUOTES, 'UTF-8') ?></a>
+            <a href="/tenants/manage"><?= htmlspecialchars(trans('tenancy::tenancy.nav.manage'), ENT_QUOTES, 'UTF-8') ?></a>
+            <a href="/tenant/hosts"><?= htmlspecialchars(trans('tenancy::tenancy.nav.hosts'), ENT_QUOTES, 'UTF-8') ?></a>
         </nav>
     </header>
 

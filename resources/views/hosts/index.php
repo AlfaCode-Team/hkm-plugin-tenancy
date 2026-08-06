@@ -6,46 +6,46 @@
  */
 ?>
 <div class="card">
-    <h2>Add a custom domain</h2>
+    <h2><?= htmlspecialchars(trans('tenancy::tenancy.hosts.add_title'), ENT_QUOTES, 'UTF-8') ?></h2>
     <p class="muted">Register a hostname for the current tenant, publish the DNS
        challenge we return, then verify it.</p>
 
     <form id="add-form" autocomplete="off">
-        <label for="hostname">Hostname</label>
+        <label for="hostname"><?= htmlspecialchars(trans('tenancy::tenancy.hosts.hostname'), ENT_QUOTES, 'UTF-8') ?></label>
         <input id="hostname" name="hostname" placeholder="app.example.com" required>
         <div class="field-error" data-for="hostname"></div>
 
-        <label for="ip_address">Expected A record (optional)</label>
+        <label for="ip_address"><?= htmlspecialchars(trans('tenancy::tenancy.hosts.expected_a'), ENT_QUOTES, 'UTF-8') ?></label>
         <input id="ip_address" name="ip_address" placeholder="203.0.113.10">
         <div class="field-error" data-for="ip_address"></div>
 
         <div class="actions">
-            <button class="btn btn-primary" type="submit">Register host</button>
+            <button class="btn btn-primary" type="submit"><?= htmlspecialchars(trans('tenancy::tenancy.hosts.register'), ENT_QUOTES, 'UTF-8') ?></button>
         </div>
     </form>
 
     <div id="dns-instructions" hidden>
-        <h3>Publish this DNS record</h3>
+        <h3><?= htmlspecialchars(trans('tenancy::tenancy.hosts.publish_dns'), ENT_QUOTES, 'UTF-8') ?></h3>
         <pre id="dns-record"></pre>
         <p class="muted" id="dns-help"></p>
     </div>
 </div>
 
 <div class="card">
-    <h2>Hosts</h2>
-    <p class="muted">Loaded from <code>GET /ajx/tenant/hosts</code>.</p>
+    <h2><?= htmlspecialchars(trans('tenancy::tenancy.nav.hosts'), ENT_QUOTES, 'UTF-8') ?></h2>
+    <p class="muted"><?= htmlspecialchars(trans('tenancy::tenancy.common.loaded_from'), ENT_QUOTES, 'UTF-8') ?><code>GET /ajx/tenant/hosts</code>.</p>
 
     <table>
         <thead>
-            <tr><th>Hostname</th><th>Status</th><th>Primary</th><th>Verified</th><th></th></tr>
+            <tr><th><?= htmlspecialchars(trans('tenancy::tenancy.hosts.hostname'), ENT_QUOTES, 'UTF-8') ?></th><th><?= htmlspecialchars(trans('tenancy::tenancy.common.status'), ENT_QUOTES, 'UTF-8') ?></th><th><?= htmlspecialchars(trans('tenancy::tenancy.hosts.primary'), ENT_QUOTES, 'UTF-8') ?></th><th><?= htmlspecialchars(trans('tenancy::tenancy.hosts.verified'), ENT_QUOTES, 'UTF-8') ?></th><th></th></tr>
         </thead>
         <tbody id="rows">
-            <tr><td colspan="5" class="muted">Loading…</td></tr>
+            <tr><td colspan="5" class="muted"><?= htmlspecialchars(trans('tenancy::tenancy.common.loading'), ENT_QUOTES, 'UTF-8') ?></td></tr>
         </tbody>
     </table>
 
     <div class="actions">
-        <button class="btn" type="button" id="reload">Reload</button>
+        <button class="btn" type="button" id="reload"><?= htmlspecialchars(trans('tenancy::tenancy.common.reload'), ENT_QUOTES, 'UTF-8') ?></button>
     </div>
 </div>
 
@@ -56,9 +56,9 @@
         <td class="c-primary"></td>
         <td class="c-verified muted"></td>
         <td>
-            <button class="btn btn-sm c-verify" type="button">Verify</button>
-            <button class="btn btn-sm c-primary-btn" type="button">Make primary</button>
-            <button class="btn btn-sm btn-danger c-del" type="button">Delete</button>
+            <button class="btn btn-sm c-verify" type="button"><?= htmlspecialchars(trans('tenancy::tenancy.hosts.verify'), ENT_QUOTES, 'UTF-8') ?></button>
+            <button class="btn btn-sm c-primary-btn" type="button"><?= htmlspecialchars(trans('tenancy::tenancy.hosts.make_primary'), ENT_QUOTES, 'UTF-8') ?></button>
+            <button class="btn btn-sm btn-danger c-del" type="button"><?= htmlspecialchars(trans('tenancy::tenancy.common.delete'), ENT_QUOTES, 'UTF-8') ?></button>
         </td>
     </tr>
 </template>
@@ -86,7 +86,7 @@
     function render(hosts) {
         tbody.innerHTML = '';
         if (!hosts.length) {
-            tbody.innerHTML = '<tr><td colspan="5" class="muted">No hosts registered yet.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" class="muted"><?= htmlspecialchars(trans('tenancy::tenancy.hosts.empty'), ENT_QUOTES, 'UTF-8') ?></td></tr>';
             return;
         }
         for (const h of hosts) {
@@ -107,7 +107,7 @@
     }
 
     async function load() {
-        tbody.innerHTML = '<tr><td colspan="5" class="muted">Loading…</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="muted"><?= htmlspecialchars(trans('tenancy::tenancy.common.loading'), ENT_QUOTES, 'UTF-8') ?></td></tr>';
         try {
             const res = await App.hosts();
             render(res.data || []);

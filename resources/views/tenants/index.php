@@ -6,21 +6,21 @@
  */
 ?>
 <div class="card">
-    <h2>Your tenants</h2>
-    <p class="muted">Loaded from <code>GET /ajx/me/tenants</code> (requires the <code>auth</code> filter).
+    <h2><?= htmlspecialchars(trans('tenancy::tenancy.nav.tenants'), ENT_QUOTES, 'UTF-8') ?></h2>
+    <p class="muted"><?= htmlspecialchars(trans('tenancy::tenancy.common.loaded_from'), ENT_QUOTES, 'UTF-8') ?><code>GET /ajx/me/tenants</code> (requires the <code>auth</code> filter).
        Select one to scope your session to that tenant.</p>
 
     <table>
         <thead>
-            <tr><th>Name</th><th>Slug</th><th>Role</th><th>Status</th><th></th></tr>
+            <tr><th><?= htmlspecialchars(trans('tenancy::tenancy.common.name'), ENT_QUOTES, 'UTF-8') ?></th><th><?= htmlspecialchars(trans('tenancy::tenancy.common.slug'), ENT_QUOTES, 'UTF-8') ?></th><th><?= htmlspecialchars(trans('tenancy::tenancy.index.role'), ENT_QUOTES, 'UTF-8') ?></th><th><?= htmlspecialchars(trans('tenancy::tenancy.common.status'), ENT_QUOTES, 'UTF-8') ?></th><th></th></tr>
         </thead>
         <tbody id="rows">
-            <tr><td colspan="5" class="muted">Loading…</td></tr>
+            <tr><td colspan="5" class="muted"><?= htmlspecialchars(trans('tenancy::tenancy.common.loading'), ENT_QUOTES, 'UTF-8') ?></td></tr>
         </tbody>
     </table>
 
     <div class="actions">
-        <button class="btn" type="button" id="reload">Reload</button>
+        <button class="btn" type="button" id="reload"><?= htmlspecialchars(trans('tenancy::tenancy.common.reload'), ENT_QUOTES, 'UTF-8') ?></button>
     </div>
 </div>
 
@@ -30,7 +30,7 @@
         <td class="c-slug muted"></td>
         <td class="c-role"></td>
         <td><span class="badge c-status"></span></td>
-        <td><button class="btn btn-sm btn-primary c-select" type="button">Select</button></td>
+        <td><button class="btn btn-sm btn-primary c-select" type="button"><?= htmlspecialchars(trans('tenancy::tenancy.index.select'), ENT_QUOTES, 'UTF-8') ?></button></td>
     </tr>
 </template>
 
@@ -42,7 +42,7 @@
     function render(tenants) {
         tbody.innerHTML = '';
         if (!tenants.length) {
-            tbody.innerHTML = '<tr><td colspan="5" class="muted">You are not a member of any tenant yet.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" class="muted"><?= htmlspecialchars(trans('tenancy::tenancy.index.empty'), ENT_QUOTES, 'UTF-8') ?></td></tr>';
             return;
         }
         for (const t of tenants) {
@@ -59,7 +59,7 @@
     }
 
     async function load() {
-        tbody.innerHTML = '<tr><td colspan="5" class="muted">Loading…</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="muted"><?= htmlspecialchars(trans('tenancy::tenancy.common.loading'), ENT_QUOTES, 'UTF-8') ?></td></tr>';
         try {
             const res = await window.TenancyApp.myTenants();
             render(res.data || []);
@@ -77,7 +77,8 @@
             if (res && res.token) {
                 try { sessionStorage.setItem('tenancy.token', res.token); } catch (_) {}
             }
-            window.TenancyApp.flash('Now scoped to ' + t.name + ' as ' + (res.role || t.role) + '.');
+            window.TenancyApp.flash(<?= json_encode(trans('tenancy::tenancy.index.scoped'), JSON_THROW_ON_ERROR) ?>
+                .replace(':name', t.name).replace(':role', res.role || t.role));
         } catch (e) {
             window.TenancyApp.flash(e.message, 'error');
         }
