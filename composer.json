@@ -3,13 +3,70 @@
     "description": "HKM Kernel plugin providing 'tenancy.routing'.",
     "type": "library",
     "license": "MIT",
-    "keywords": ["hkm-kernel", "plugin", "php", "tenancy.routing"],
+    "keywords": [
+        "hkm-kernel",
+        "plugin",
+        "php",
+        "tenancy.routing"
+    ],
     "require": {
-        "php": ">=8.4"
+        "php": ">=8.4",
+        "alfacode-team/php-service-platform": "dev-master",
+        "alfacode-team/hkm-plugin-database": "dev-main"
     },
     "autoload": {
         "psr-4": {
             "Plugins\\Tenancy\\": ""
+        }
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11 || ^12 || ^13",
+        "alfacode-team/hkm-plugin-audit": "dev-main",
+        "alfacode-team/hkm-plugin-security-filters": "dev-main"
+    },
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/AlfaCode-Team/hkm-kernel"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/AlfaCode-Team/hkm-plugin-audit"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/AlfaCode-Team/hkm-plugin-database"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/AlfaCode-Team/hkm-plugin-security-filters"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/AlfaCode-Team/http"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/AlfaCode-Team/php-io-cli"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/AlfaCode-Team/Let-Migrate"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/hakrichTech/bindIt"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/hakrichTech/type-alias"
+        }
+    ],
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\Unit\\Plugins\\Tenancy\\": "tests/"
         }
     }
 }
