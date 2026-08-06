@@ -10,6 +10,7 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\DatabasePort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Http\Contracts\HttpStageContract;
 use Plugins\Cookie\Infrastructure\CookieJar;
 use Plugins\Database\Exceptions\ConnectionException;
+use Plugins\Tenancy\API\Contracts\MembershipServiceContract;
 use Plugins\Tenancy\API\Contracts\TenantConnectionResolverContract;
 use Plugins\Tenancy\Infrastructure\Http\Identification\TenantIdentifier;
 use Plugins\Tenancy\Domain\Exceptions\TenantUnavailableException;
@@ -121,13 +122,29 @@ final class TenantContextStage implements HttpStageContract
 
 
 
-        $fromCookie = false;
-        $tenantId = $this->rememberedTenant($jar, $request, $userId);
-        $fromCookie = $tenantId !== '';
+        // ── Resolution order: SIGNED CLAIM > cookie hint > identifier ────────
+        //
+        // The cookie used to be read FIRST and the authenticated tenant claim
+        // was never consulted at all. A user who belonged to tenants A and B,
+        // and switched to B (which re-mints the token with tnt=B), kept the
+        // stale A cookie — so every subsequent request was routed to tenant A's
+        // DATABASE while the token said B. Cross-tenant data access from an
+        // ordinary tenant switch.
+        //
+        // The cookie is a hint, as its own docblock always claimed. Anything
+        // the server signed outranks anything the client stores.
+        $claimedTenant = $request->identity()?->tenantId ?? '';
 
-        // The remembered selection (encrypted, principal-bound cookie) is tried
-        // first; only when there is no valid hint does the identifier run
-        // (JWT `tnt` claim / Host, per TENANCY_MODE). An identifier may throw
+        $tenantId   = $claimedTenant;
+        $fromCookie = false;
+
+        if ($tenantId === '') {
+            $tenantId   = $this->rememberedTenant($jar, $request, $userId);
+            $fromCookie = $tenantId !== '';
+        }
+
+        // Only when neither the claim nor a valid hint resolved does the
+        // identifier run (Host, per TENANCY_MODE). An identifier may throw
         // UnknownTenantException to fail closed on a host it refuses to serve.
         try {
             if ($tenantId === '') {
@@ -146,6 +163,39 @@ final class TenantContextStage implements HttpStageContract
         // default — they do not depend on this stage skipping the rebind.
         if ($tenantId === '') {
             return Response::notFound('Tenant not found.');
+        }
+
+        // ── Re-verify the seat, every request ────────────────────────────────
+        //
+        // Tenant STATUS was checked, but membership never was: revoking a user's
+        // seat left them with full tenant-database access until their token
+        // happened to expire — up to the whole token lifetime. Authorization
+        // must be re-derived per request, not trusted from a claim minted when
+        // the seat still existed.
+        //
+        // Guests (no userId) are unaffected: they never had a seat, and public
+        // host-resolved pages must keep working.
+        if ($userId !== '' && $container->has(MembershipServiceContract::class)) {
+            $memberships = $container->make(MembershipServiceContract::class);
+
+            try {
+                $isMember = $memberships->isActiveMember($userId, $tenantId);
+            } catch (\Throwable) {
+                // FAIL CLOSED. If membership cannot be established, do not fall
+                // through to serving the tenant's data.
+                $isMember = false;
+            }
+
+            if (!$isMember) {
+                // Drop the stale hint so the user is not trapped bouncing off a
+                // tenant they no longer belong to.
+                if ($fromCookie && $jar !== null) {
+                    $jar->forget(self::COOKIE);
+                }
+
+                // 404, not 403: whether a tenant exists is itself information.
+                return Response::notFound('Tenant not found.');
+            }
         }
 
         $resolver = $this->resolver ?? $container->make(TenantConnectionResolverContract::class);
