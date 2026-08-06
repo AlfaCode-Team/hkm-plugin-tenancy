@@ -20,9 +20,10 @@
         }
     },
     "require-dev": {
-        "phpunit/phpunit": "^11 || ^12 || ^13",
         "alfacode-team/hkm-plugin-audit": "dev-main",
-        "alfacode-team/hkm-plugin-security-filters": "dev-main"
+        "alfacode-team/hkm-plugin-i18n": "dev-main",
+        "alfacode-team/hkm-plugin-security-filters": "dev-main",
+        "phpunit/phpunit": "^11 || ^12 || ^13"
     },
     "repositories": [
         {

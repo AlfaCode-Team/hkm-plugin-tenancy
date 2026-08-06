@@ -11,20 +11,20 @@
 $tenantId = $tenantId ?? '';
 ?>
 <div class="card">
-    <h2>Edit tenant</h2>
+    <h2><?= htmlspecialchars(trans('tenancy::tenancy.edit.title'), ENT_QUOTES, 'UTF-8') ?></h2>
     <p class="muted">Only the name, slug and status can be changed here. Database
        coordinates are fixed once a tenant is provisioned.</p>
 
     <form id="form" novalidate>
-        <label for="name">Display name</label>
+        <label for="name"><?= htmlspecialchars(trans('tenancy::tenancy.create.display_name'), ENT_QUOTES, 'UTF-8') ?></label>
         <input id="name" name="name" autocomplete="off">
         <div class="field-error" data-for="name"></div>
 
-        <label for="slug">Slug <span class="muted">(^[a-z0-9-]+$)</span></label>
+        <label for="slug"><?= htmlspecialchars(trans('tenancy::tenancy.common.slug'), ENT_QUOTES, 'UTF-8') ?><span class="muted">(^[a-z0-9-]+$)</span></label>
         <input id="slug" name="slug" autocomplete="off">
         <div class="field-error" data-for="slug"></div>
 
-        <label for="status">Status</label>
+        <label for="status"><?= htmlspecialchars(trans('tenancy::tenancy.common.status'), ENT_QUOTES, 'UTF-8') ?></label>
         <select id="status" name="status">
             <option value="active">active</option>
             <option value="provisioning">provisioning</option>
@@ -33,12 +33,12 @@ $tenantId = $tenantId ?? '';
         </select>
         <div class="field-error" data-for="status"></div>
 
-        <label>Database <span class="muted">(read-only)</span></label>
+        <label><?= htmlspecialchars(trans('tenancy::tenancy.common.database'), ENT_QUOTES, 'UTF-8') ?><span class="muted">(read-only)</span></label>
         <pre id="db">…</pre>
 
         <div class="actions">
-            <button class="btn btn-primary" type="submit" id="submit" disabled>Save changes</button>
-            <a class="btn" href="/tenants/manage">Back</a>
+            <button class="btn btn-primary" type="submit" id="submit" disabled><?= htmlspecialchars(trans('tenancy::tenancy.edit.submit'), ENT_QUOTES, 'UTF-8') ?></button>
+            <a class="btn" href="/tenants/manage"><?= htmlspecialchars(trans('tenancy::tenancy.common.back'), ENT_QUOTES, 'UTF-8') ?></a>
         </div>
     </form>
 </div>

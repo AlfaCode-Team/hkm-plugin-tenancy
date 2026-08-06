@@ -6,7 +6,7 @@
 ?>
 <div class="card">
     <div class="actions" style="margin:0 0 1rem; justify-content:space-between; align-items:center;">
-        <h2 style="margin:0;">Tenants</h2>
+        <h2 style="margin:0;"><?= htmlspecialchars(trans('tenancy::tenancy.manage.title'), ENT_QUOTES, 'UTF-8') ?></h2>
         <a class="btn btn-primary" href="/tenants/create">+ New tenant</a>
     </div>
     <p class="muted">Control plane for the whole fleet — backed by
@@ -14,15 +14,15 @@
 
     <table>
         <thead>
-            <tr><th>Name</th><th>Slug</th><th>Database</th><th>Status</th><th></th></tr>
+            <tr><th><?= htmlspecialchars(trans('tenancy::tenancy.common.name'), ENT_QUOTES, 'UTF-8') ?></th><th><?= htmlspecialchars(trans('tenancy::tenancy.common.slug'), ENT_QUOTES, 'UTF-8') ?></th><th><?= htmlspecialchars(trans('tenancy::tenancy.common.database'), ENT_QUOTES, 'UTF-8') ?></th><th><?= htmlspecialchars(trans('tenancy::tenancy.common.status'), ENT_QUOTES, 'UTF-8') ?></th><th></th></tr>
         </thead>
         <tbody id="rows">
-            <tr><td colspan="5" class="muted">Loading…</td></tr>
+            <tr><td colspan="5" class="muted"><?= htmlspecialchars(trans('tenancy::tenancy.common.loading'), ENT_QUOTES, 'UTF-8') ?></td></tr>
         </tbody>
     </table>
 
     <div class="actions">
-        <button class="btn" type="button" id="reload">Reload</button>
+        <button class="btn" type="button" id="reload"><?= htmlspecialchars(trans('tenancy::tenancy.common.reload'), ENT_QUOTES, 'UTF-8') ?></button>
     </div>
 </div>
 
@@ -33,8 +33,8 @@
         <td class="c-db muted"></td>
         <td><span class="badge c-status"></span></td>
         <td style="white-space:nowrap;">
-            <a class="btn btn-sm c-edit">Edit</a>
-            <button class="btn btn-sm btn-danger c-delete" type="button">Delete</button>
+            <a class="btn btn-sm c-edit"><?= htmlspecialchars(trans('tenancy::tenancy.common.edit'), ENT_QUOTES, 'UTF-8') ?></a>
+            <button class="btn btn-sm btn-danger c-delete" type="button"><?= htmlspecialchars(trans('tenancy::tenancy.common.delete'), ENT_QUOTES, 'UTF-8') ?></button>
         </td>
     </tr>
 </template>
@@ -47,7 +47,7 @@
     function render(tenants) {
         tbody.innerHTML = '';
         if (!tenants.length) {
-            tbody.innerHTML = '<tr><td colspan="5" class="muted">No tenants yet. Create the first one.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" class="muted"><?= htmlspecialchars(trans('tenancy::tenancy.manage.empty'), ENT_QUOTES, 'UTF-8') ?></td></tr>';
             return;
         }
         for (const t of tenants) {
@@ -66,7 +66,7 @@
     }
 
     async function load() {
-        tbody.innerHTML = '<tr><td colspan="5" class="muted">Loading…</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="muted"><?= htmlspecialchars(trans('tenancy::tenancy.common.loading'), ENT_QUOTES, 'UTF-8') ?></td></tr>';
         try {
             const res = await window.TenancyApp.adminTenants();
             render(res.data || []);
