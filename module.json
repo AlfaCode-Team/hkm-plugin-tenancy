@@ -101,6 +101,63 @@
             ]
         },
         {
+            "method": "POST",
+            "path": "/ajx/admin/tenants/{tenantId}/suspend",
+            "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantAdminController@suspend",
+            "filters": [
+                "auth"
+            ]
+        },
+        {
+            "method": "POST",
+            "path": "/ajx/admin/tenants/{tenantId}/reactivate",
+            "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantAdminController@reactivate",
+            "filters": [
+                "auth"
+            ]
+        },
+        {
+            "method": "GET",
+            "path": "/ajx/admin/tenants/{tenantId}/health",
+            "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantAdminController@health",
+            "filters": [
+                "auth"
+            ]
+        },
+        {
+            "method": "GET",
+            "path": "/ajx/admin/tenants/{tenantId}/children",
+            "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantAdminController@children",
+            "filters": [
+                "auth"
+            ]
+        },
+        {
+            "method": "POST",
+            "path": "/ajx/admin/tenants/{tenantId}/sub-tenants/grant",
+            "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantAdminController@grantSubTenants",
+            "filters": [
+                "auth"
+            ]
+        },
+        {
+            "method": "POST",
+            "path": "/ajx/admin/tenants/{tenantId}/sub-tenants/revoke",
+            "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantAdminController@revokeSubTenants",
+            "filters": [
+                "auth"
+            ]
+        },
+        {
+            "method": "GET",
+            "path": "/ajx/admin/audit-log",
+            "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\AuditLogController@index",
+            "filters": [
+                "auth",
+                "throttle:60,1"
+            ]
+        },
+        {
             "method": "GET",
             "path": "/ajx/me/tenants",
             "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantController@mine",
@@ -131,10 +188,92 @@
             "path": "/ajx/invitations/accept",
             "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\InvitationController@accept",
             "filters": [
-                "auth"
+                "auth",
+                "throttle:20,5"
             ],
             "requires": [
                 "user.management",
+                "audit.trail"
+            ]
+        },
+        {
+            "method": "GET",
+            "path": "/ajx/tenant/invitations",
+            "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantInvitationController@index",
+            "filters": [
+                "auth"
+            ],
+            "requires": [
+                "audit.trail"
+            ]
+        },
+        {
+            "method": "POST",
+            "path": "/ajx/tenant/invitations",
+            "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantInvitationController@store",
+            "filters": [
+                "auth",
+                "throttle:30,5"
+            ],
+            "requires": [
+                "audit.trail"
+            ]
+        },
+        {
+            "method": "POST",
+            "path": "/ajx/tenant/invitations/bulk",
+            "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantInvitationController@bulk",
+            "filters": [
+                "auth",
+                "throttle:5,5"
+            ],
+            "requires": [
+                "audit.trail"
+            ]
+        },
+        {
+            "method": "POST",
+            "path": "/ajx/tenant/invitations/{inviteId}/resend",
+            "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantInvitationController@resend",
+            "filters": [
+                "auth",
+                "throttle:30,5"
+            ],
+            "requires": [
+                "audit.trail"
+            ]
+        },
+        {
+            "method": "DELETE",
+            "path": "/ajx/tenant/invitations/{inviteId}",
+            "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantInvitationController@destroy",
+            "filters": [
+                "auth"
+            ],
+            "requires": [
+                "audit.trail"
+            ]
+        },
+        {
+            "method": "GET",
+            "path": "/ajx/tenant/sub-tenants",
+            "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\SubTenantController@index",
+            "filters": [
+                "auth"
+            ],
+            "requires": [
+                "audit.trail"
+            ]
+        },
+        {
+            "method": "POST",
+            "path": "/ajx/tenant/sub-tenants",
+            "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\SubTenantController@store",
+            "filters": [
+                "auth",
+                "throttle:5,10"
+            ],
+            "requires": [
                 "audit.trail"
             ]
         },
@@ -154,7 +293,8 @@
             "path": "/ajx/tenant/hosts",
             "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantHostController@store",
             "filters": [
-                "auth"
+                "auth",
+                "throttle:20,5"
             ],
             "requires": [
                 "audit.trail"
@@ -176,7 +316,8 @@
             "path": "/ajx/tenant/hosts/{hostId}/verify",
             "handler": "Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\TenantHostController@verify",
             "filters": [
-                "auth"
+                "auth",
+                "throttle:20,5"
             ],
             "requires": [
                 "audit.trail"
@@ -227,6 +368,11 @@
             "required": false
         },
         {
+            "key": "TENANCY_MAX_SUB_TENANTS_PER_PARENT",
+            "type": "int",
+            "required": false
+        },
+        {
             "key": "TENANCY_BASE_DOMAINS",
             "type": "string",
             "required": false
@@ -270,6 +416,29 @@
             "key": "TENANCY_CONTROL_PLANE",
             "type": "bool",
             "required": false
+        },
+        {
+            "key": "TENANCY_EXEMPT",
+            "type": "string",
+            "required": false,
+            "default": "/ping"
+        },
+        {
+            "key": "TENANCY_MEMBERSHIP_CACHE_TTL",
+            "type": "int",
+            "required": false,
+            "default": 10
+        },
+        {
+            "key": "TENANCY_CENTRAL_DOMAINS",
+            "type": "string",
+            "required": false
+        },
+        {
+            "key": "TENANCY_MAX_WARM_CONNECTIONS",
+            "type": "int",
+            "required": false,
+            "default": 200
         }
     ],
     "lang": {

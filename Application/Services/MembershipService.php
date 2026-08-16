@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Plugins\Tenancy\Application\Services;
 
+use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\CachePort;
 use Plugins\Tenancy\API\Contracts\MembershipServiceContract;
 use Plugins\Tenancy\API\DTOs\TenantSummary;
 use Plugins\Audit\API\Contracts\AuditServiceContract;
@@ -27,12 +28,23 @@ use Plugins\Tenancy\Domain\Exceptions\NotAMemberException;
  * The re-verification on selection — and the per-request re-check that the Auth
  * layer/TenantContextStage performs — is what makes a revoked seat lose access
  * before the previously-issued token would expire.
+ *
+ * isActiveMember() is TenantContextStage's hot-path check, run on every
+ * authenticated request. It is cached with a deliberately SHORT TTL (a few
+ * seconds, not TENANCY_REGISTRY_TTL's minute-scale default): long enough to
+ * spare the central `user_tenants` JOIN on every request from the same user,
+ * short enough that a revoked seat still loses access within a few seconds
+ * rather than lingering — the exact guarantee this re-check exists for.
+ * selectTenant() (the explicit switch/re-verification endpoint) never reads
+ * this cache — it always hits the repository directly.
  */
 final class MembershipService implements MembershipServiceContract
 {
     public function __construct(
         private readonly MembershipReader $memberships,
         private readonly AuditServiceContract $audit,
+        private readonly ?CachePort $cache = null,
+        private readonly int $activeMembershipCacheTtl = 10,
     ) {}
 
     public function myTenants(string $userId): array
@@ -45,7 +57,32 @@ final class MembershipService implements MembershipServiceContract
 
     public function isActiveMember(string $userId, string $tenantId): bool
     {
-        return $this->activeMember($userId, $tenantId) !== null;
+        if ($this->cache === null) {
+            return $this->activeMember($userId, $tenantId) !== null;
+        }
+
+        $key = $this->activeMembershipCacheKey($userId, $tenantId);
+
+        $cached = $this->cache->get($key);
+        if (is_bool($cached)) {
+            return $cached;
+        }
+
+        $isActive = $this->activeMember($userId, $tenantId) !== null;
+        $this->cache->set($key, $isActive, $this->activeMembershipCacheTtl);
+
+        return $isActive;
+    }
+
+    /** Bust the isActiveMember() cache immediately (e.g. after a seat is revoked or re-granted). */
+    public function forgetActiveMemberCache(string $userId, string $tenantId): void
+    {
+        $this->cache?->delete($this->activeMembershipCacheKey($userId, $tenantId));
+    }
+
+    private function activeMembershipCacheKey(string $userId, string $tenantId): string
+    {
+        return 'tenancy:membership:active:' . $userId . ':' . $tenantId;
     }
 
     public function activeMember(string $userId, string $tenantId): ?TenantSummary

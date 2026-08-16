@@ -22,12 +22,16 @@ interface TenantRegistryContract
     public function exists(string $tenantId): bool;
 
     /**
-     * All tenants in a given lifecycle status — used by the fleet migrator and
-     * provisioning tools. Not a hot path; not cached.
+     * Tenants at a given status — used by the fleet migrator and provisioning
+     * tools. Not a hot path; not cached. Optionally paged so a fleet-wide
+     * operation (e.g. tenants:migrate) can stream the registry in batches
+     * instead of loading every row — including every encrypted credential —
+     * into memory at once. $limit === null means unbounded (the historical
+     * behaviour).
      *
      * @return list<Tenant>
      */
-    public function listByStatus(int $status): array;
+    public function listByStatus(int $status, ?int $limit = null, int $offset = 0): array;
 
     /** Drop any cached copy of a tenant (call after registry mutations). */
     public function forget(string $tenantId): void;

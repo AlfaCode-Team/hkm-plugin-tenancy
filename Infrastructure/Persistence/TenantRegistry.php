@@ -32,6 +32,16 @@ final class TenantRegistry implements TenantRegistryContract
 
     public function find(string $tenantId): ?Tenant
     {
+        // Deliberately NO worker-local L1 cache in front of CachePort here (a
+        // short-TTL local memo was tried and reverted): forget() below can only
+        // clear the CALLING worker's own local state, so a control-plane
+        // suspend/delete/rotate on worker B would leave worker A serving a
+        // stale row for up to the memo's TTL — contradicting the "takes effect
+        // immediately" guarantee this class and TenantConnectionResolver both
+        // document and rely on (status is re-checked on every for() call
+        // specifically so a suspension can never linger on a warm connection).
+        // The shared CachePort tier below is what makes forget() actually
+        // immediate across every worker, so it stays the only cache here.
         $key = $this->key($tenantId);
 
         $cached = $this->cache->get($key);
@@ -51,14 +61,22 @@ final class TenantRegistry implements TenantRegistryContract
         );
 
         if ($row === null) {
-            $this->cache->set($key, self::MISS, $this->ttl);
+            $this->cache->set($key, self::MISS, $this->jitteredTtl());
             return null;
         }
 
         // Cache the raw row (cheaply serializable) rather than the entity.
-        $this->cache->set($key, $row, $this->ttl);
+        $this->cache->set($key, $row, $this->jitteredTtl());
 
         return Tenant::fromRow($row);
+    }
+
+    /** +/-10% jitter so a fleet of hot keys does not expire in lockstep and stampede the DB. */
+    private function jitteredTtl(): int
+    {
+        $spread = max(1, intdiv($this->ttl, 10));
+
+        return max(1, $this->ttl + random_int(-$spread, $spread));
     }
 
     public function exists(string $tenantId): bool
@@ -66,16 +84,23 @@ final class TenantRegistry implements TenantRegistryContract
         return $this->find($tenantId)?->status->isRoutable() === true;
     }
 
-    public function listByStatus(int $status): array
+    /** Hard ceiling applied when a caller passes no $limit, so a large fleet can never load unbounded. */
+    private const MAX_UNPAGED_LIMIT = 1000;
+
+    public function listByStatus(int $status, ?int $limit = null, int $offset = 0): array
     {
-        $rows = $this->central->query(
-            'SELECT tenant_id, name, slug, db_driver, db_host, db_port, db_name,
-                    db_username, db_password_enc, db_shard, status, schema_version
-               FROM tenants
-              WHERE status = :status AND deleted_at IS NULL
-              ORDER BY id ASC',
-            ['status' => $status],
-        );
+        $sql = 'SELECT tenant_id, name, slug, db_driver, db_host, db_port, db_name,
+                       db_username, db_password_enc, db_shard, status, schema_version
+                  FROM tenants
+                 WHERE status = :status AND deleted_at IS NULL
+                 ORDER BY id ASC
+                 LIMIT :limit OFFSET :offset';
+
+        $rows = $this->central->query($sql, [
+            'status' => $status,
+            'limit'  => $limit !== null ? max(1, $limit) : self::MAX_UNPAGED_LIMIT,
+            'offset' => $offset,
+        ]);
 
         return array_map(static fn (array $r): Tenant => Tenant::fromRow($r), $rows);
     }

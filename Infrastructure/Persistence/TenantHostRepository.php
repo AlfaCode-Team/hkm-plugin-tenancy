@@ -44,6 +44,20 @@ final class TenantHostRepository implements TenantHostStore
         return array_map(static fn (array $r): TenantHost => TenantHost::fromRow($r), $rows);
     }
 
+    public function countForTenant(string $tenantId): int
+    {
+        try {
+            $row = $this->central->queryOne(
+                'SELECT COUNT(*) AS c FROM tenant_hosts WHERE tenant_id = :tid AND deleted_at IS NULL',
+                ['tid' => $tenantId],
+            );
+        } catch (\Throwable $e) {
+            throw new RepositoryException('Failed to count tenant hosts.', layer: 'repository.tenancy', previous: $e);
+        }
+
+        return (int) ($row['c'] ?? 0);
+    }
+
     public function find(string $tenantId, int $hostId): ?TenantHost
     {
         try {

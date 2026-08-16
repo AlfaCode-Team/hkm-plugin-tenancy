@@ -61,7 +61,7 @@ final class TenantHostService implements TenantHostServiceContract
         $host = Hostname::of($hostname);                 // validates + normalises (throws on bad input)
         $ip   = $this->normaliseIp($expectedIp);
 
-        if ($this->maxHostsPerTenant > 0 && count($this->hosts->allForTenant($tenantId)) >= $this->maxHostsPerTenant) {
+        if ($this->maxHostsPerTenant > 0 && $this->hosts->countForTenant($tenantId) >= $this->maxHostsPerTenant) {
             throw new HostQuotaExceededException($tenantId, $this->maxHostsPerTenant);
         }
 

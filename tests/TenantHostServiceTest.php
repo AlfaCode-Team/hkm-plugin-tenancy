@@ -40,6 +40,11 @@ final class TenantHostServiceTest extends TestCase
                 return $out;
             }
 
+            public function countForTenant(string $tenantId): int
+            {
+                return count($this->allForTenant($tenantId));
+            }
+
             public function find(string $tenantId, int $hostId): ?TenantHost
             {
                 $r = $this->rows[$hostId] ?? null;

@@ -14,6 +14,7 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\DatabasePort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\EncryptionPort;
 use Plugins\Database\API\Contracts\DatabaseConnectionManagerContract;
 use Plugins\Tenancy\Infrastructure\Cli\Concerns\ManagesTenantDatabase;
+use Plugins\Tenancy\Domain\ValueObjects\SqlIdentifier;
 use Plugins\Tenancy\Domain\ValueObjects\TenantStatus;
 use Plugins\Tenancy\Support\TenantsFile;
 use Plugins\Tenancy\Support\Token;
@@ -62,6 +63,7 @@ final class CreateTenantCommand extends AbstractCommand
         $this->addOption('db-user', '', 'Tenant DB username', acceptsValue: true);
         $this->addOption('db-password', '', 'Tenant DB password (stored encrypted)', acceptsValue: true, default: '');
         $this->addOption('template', '', 'Override template migrations path', acceptsValue: true);
+        $this->addOption('dry-run', '', 'Validate inputs and check for conflicts without creating anything');
     }
 
     protected function handle(): int
@@ -94,7 +96,7 @@ final class CreateTenantCommand extends AbstractCommand
 
             // Inline validators — the prompt blocks until the value is valid.
             $idRule = static fn (string $v): ?string =>
-                preg_match('/^[A-Za-z0-9_]+$/', $v) ? null : 'Letters, digits and underscore only.';
+                SqlIdentifier::isValid($v) ? null : 'Letters, digits and underscore only.';
 
             if ($name === '') {
                 $name = (string) (new TextInput('Tenant display name'))
@@ -156,17 +158,21 @@ final class CreateTenantCommand extends AbstractCommand
             $this->error("Invalid slug [{$slug}] — must match ^[a-z0-9-]+$");
             return self::FAILURE;
         }
-        if (!preg_match('/^[A-Za-z0-9_]+$/', $dbName)) {
+        if (!SqlIdentifier::isValid($dbName)) {
             $this->error("Unsafe --db-name [{$dbName}] — letters, digits, underscore only.");
             return self::FAILURE;
         }
-        if (!preg_match('/^[A-Za-z0-9_]+$/', $dbUser)) {
+        if (!SqlIdentifier::isValid($dbUser)) {
             $this->error("Unsafe --db-user [{$dbUser}] — letters, digits, underscore only.");
             return self::FAILURE;
         }
         if (!preg_match('/^[A-Za-z0-9_.:\-]+$/', $dbHost)) {
             $this->error("Unsafe --db-host [{$dbHost}] — hostname/IP characters only.");
             return self::FAILURE;
+        }
+
+        if ($this->hasOption('dry-run')) {
+            return $this->printDryRunReport($driver, $name, $slug, $dbName, $dbUser, $dbHost, $dbPort);
         }
 
         // Interactive runs get a final confirmation with the resolved settings.
@@ -267,6 +273,49 @@ final class CreateTenantCommand extends AbstractCommand
             $this->info("Recorded as default tenant in " . TenantsFile::path() . '.');
         } catch (\Throwable) {
         }
+
+        return self::SUCCESS;
+    }
+
+    /**
+     * --dry-run: run every read-only check handle() would run before its first
+     * mutation (slug collision against the central registry, whether the target
+     * physical database already exists) and report the outcome — no INSERT, no
+     * CREATE DATABASE/USER, no migration ever runs. Risk mitigation before
+     * provisioning a real tenant on a fleet an operator doesn't want to pollute
+     * with a typo'd run.
+     */
+    private function printDryRunReport(
+        string $driver,
+        string $name,
+        string $slug,
+        string $dbName,
+        string $dbUser,
+        string $dbHost,
+        int $dbPort,
+    ): int {
+        $central = $this->connections->default();
+
+        $slugTaken = $central->queryOne('SELECT 1 AS p FROM tenants WHERE slug = :s', ['s' => $slug]) !== null;
+        $dbTaken   = $this->databaseExists($central, $driver, $dbName);
+        $template  = (string) ($this->option('template') ?: $this->defaultTemplatePath());
+
+        $this->alertInfo('Dry run — nothing will be created', [
+            "driver   : {$driver}",
+            "name     : {$name}",
+            "slug     : {$slug}" . ($slugTaken ? '  [CONFLICT: already registered]' : '  [free]'),
+            "database : {$dbName} @ {$dbHost}:{$dbPort}" . ($dbTaken ? '  [WARNING: already exists on this server]' : '  [does not exist yet]'),
+            "username : {$dbUser}",
+            "template : {$template}",
+        ]);
+
+        if ($slugTaken) {
+            $this->error('Would fail: a tenant with this slug already exists in the registry.');
+
+            return self::FAILURE;
+        }
+
+        $this->success('Dry run OK — inputs are valid and the slug is free. Re-run without --dry-run to provision.');
 
         return self::SUCCESS;
     }

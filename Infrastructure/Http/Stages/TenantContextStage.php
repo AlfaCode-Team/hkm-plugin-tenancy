@@ -36,6 +36,15 @@ use Plugins\Tenancy\Infrastructure\TenantConnectionResolver;
  *   - Tenant present -> rebind, or fail closed with a clean status. There is no
  *     silent fallback to another tenant or to central.
  *
+ * The ONE deliberate exception: a host listed in TENANCY_CENTRAL_DOMAINS skips
+ * identification/resolution entirely and is served the CENTRAL connection —
+ * for an admin/ops domain that lives on the SAME deployment as the
+ * tenant-serving ones (e.g. `admin.example.com` next to `*.example.com`).
+ * This is narrower than TENANCY_CONTROL_PLANE=true (Provider::boot()), which
+ * disables this whole STAGE for every request in the deployment — the right
+ * tool for a dedicated control-plane project. TENANCY_CENTRAL_DOMAINS is the
+ * right tool when ONE deployment serves both kinds of host at once.
+ *
  * This stage is purely connection routing; tenant IDENTIFICATION is the
  * identifier's job and tenant existence is the registry's.
  */
@@ -87,8 +96,55 @@ final class TenantContextStage implements HttpStageContract
         return false;
     }
 
+    /**
+     * Hosts served entirely from the CENTRAL connection — no tenant scope,
+     * ever. Configured via TENANCY_CENTRAL_DOMAINS (comma-separated; a leading
+     * '*.' matches any subdomain of that parent, same grammar as a route
+     * group's "domain" key), unset by default (nothing is exempt). Memoised
+     * once — see isExempt() above for why the static cache is safe here.
+     */
+    private function isCentralDomain(Request $request): bool
+    {
+        static $domains = null;
+        if ($domains === null) {
+            $raw     = (string) (env('TENANCY_CENTRAL_DOMAINS') ?: '');
+            $domains = array_values(array_filter(
+                array_map(static fn (string $d): string => strtolower(trim($d)), explode(',', $raw)),
+                static fn (string $d): bool => $d !== '',
+            ));
+        }
+
+        if ($domains === []) {
+            return false;
+        }
+
+        // The VALIDATED host (DomainResolver-checked), not the raw Host header —
+        // same reasoning as ResolveStage's route_host attribute: a caller must
+        // not be able to choose which policy applies by forging Host.
+        $host = strtolower((string) ($request->attribute('route_host') ?? $request->host()));
+
+        foreach ($domains as $pattern) {
+            if (str_starts_with($pattern, '*.')) {
+                if (str_ends_with($host, substr($pattern, 1)) || $host === substr($pattern, 2)) {
+                    return true;
+                }
+            } elseif ($host === $pattern) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public function handle(Request $request, callable $next): Response
     {
+        // An admin/ops/central domain never has a tenant scope — see the class
+        // docblock. Checked before the path exemption below since it applies
+        // regardless of path.
+        if ($this->isCentralDomain($request)) {
+            return $next($request);
+        }
+
         // Infrastructure/health endpoints (TENANCY_EXEMPT, default '/ping') carry
         // no tenant scope — skip identification AND the per-request DB rebind
         // entirely. This stage is an always-on essential hook, so without this a
@@ -175,7 +231,24 @@ final class TenantContextStage implements HttpStageContract
         //
         // Guests (no userId) are unaffected: they never had a seat, and public
         // host-resolved pages must keep working.
-        if ($userId !== '' && $container->has(MembershipServiceContract::class)) {
+        if ($userId !== '') {
+            if (!$container->has(MembershipServiceContract::class)) {
+                // Same reasoning as the TenantIdentifier guard above: an
+                // authenticated request that resolved a tenant MUST have its
+                // seat re-verified per request (see this method's docblock on
+                // WHY). Silently skipping the check because the dependency
+                // happens not to be bound would quietly resurrect the exact
+                // "revoked seat still works until the token expires" hole this
+                // re-check exists to close — fail loud so a wiring mistake is
+                // caught in development, not discovered as a live
+                // authorization gap.
+                throw new \RuntimeException(
+                    'TenantContextStage: an authenticated request resolved a tenant '
+                    . 'but MembershipServiceContract is not bound, so the seat cannot '
+                    . 'be re-verified. Ensure the Tenancy module is loaded as essential.'
+                );
+            }
+
             $memberships = $container->make(MembershipServiceContract::class);
 
             try {
@@ -210,6 +283,17 @@ final class TenantContextStage implements HttpStageContract
             }
             return Response::notFound('Tenant not found.');
         } catch (TenantUnavailableException $e) {
+            // Same reasoning as the UnknownTenantException branch above: a hint
+            // that resolves to a tenant the resolver just refused (suspended,
+            // deleted, still provisioning, or breaker-open) is not one worth
+            // keeping — drop it so the browser stops bouncing off the same
+            // unavailable tenant every request. Suspension is reversible, but
+            // re-selecting a reactivated tenant through the picker re-mints the
+            // cookie, which is a small price for not trapping the user on a
+            // known-bad hint in the meantime.
+            if ($fromCookie && $jar !== null) {
+                $jar->forget(self::COOKIE);
+            }
             return $this->unavailable($e);
         }
 

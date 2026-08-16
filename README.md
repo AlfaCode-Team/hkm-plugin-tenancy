@@ -236,3 +236,9 @@ the resolver) into the **CoreContainer** in bootstrap so resolved tenant adapter
 persist per worker. Cap with an LRU eviction of idle tenant connections so a
 worker serving thousands of tenants never holds thousands of open sockets — and
 front the DB tier with ProxySQL/PgBouncer under PHP-FPM.
+
+## Documentation
+
+- [CLAUDE.md](CLAUDE.md) — this plugin's contract, config and rules (start here).
+- [docs/TENANCY.md](docs/TENANCY.md) — the full Tenancy reference.
+- [Kernel guides](https://github.com/AlfaCode-Team/hkm-kernel/tree/main/docs/guides) — the framework contracts this plugin builds on.

@@ -11,6 +11,7 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Http\Response;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\DatabasePort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Security\Identity;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 use Plugins\Tenancy\API\Contracts\MembershipServiceContract;
 use Plugins\Tenancy\API\Contracts\TenantConnectionResolverContract;
@@ -137,5 +138,56 @@ final class TenantContextStageSecurityTest extends TestCase
         // If membership cannot be established, do not serve the tenant's data.
         self::assertSame(404, $response->getStatusCode());
         self::assertNull($this->routedTo);
+    }
+
+    // ── TENANCY_CENTRAL_DOMAINS ────────────────────────────────────────────
+    //
+    // isCentralDomain() memoises the parsed env value in a function-static
+    // local (same pattern as isExempt(), justified in the class docblock),
+    // so any test that sets TENANCY_CENTRAL_DOMAINS runs in its own process —
+    // otherwise the FIRST test to touch this code path would freeze the
+    // parsed value for every test after it in the same PHPUnit run.
+
+    #[RunInSeparateProcess]
+    public function test_a_central_domain_skips_resolution_and_is_served_centrally(): void
+    {
+        $_ENV['TENANCY_CENTRAL_DOMAINS'] = 'admin.example.com';
+
+        $request = Request::build(method: 'GET', path: '/ajx/x')
+            ->withAttribute('route_host', 'admin.example.com');
+
+        $response = $this->dispatch($request, $this->container(), identifies: 'tenant-a');
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertNull($this->routedTo, 'a central-domain request must never resolve a tenant connection');
+    }
+
+    #[RunInSeparateProcess]
+    public function test_a_wildcard_central_domain_matches_subdomains(): void
+    {
+        $_ENV['TENANCY_CENTRAL_DOMAINS'] = '*.admin.example.com';
+
+        $request = Request::build(method: 'GET', path: '/ajx/x')
+            ->withAttribute('route_host', 'ops.admin.example.com');
+
+        $response = $this->dispatch($request, $this->container(), identifies: 'tenant-a');
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertNull($this->routedTo);
+    }
+
+    #[RunInSeparateProcess]
+    public function test_a_host_not_listed_still_resolves_normally(): void
+    {
+        $_ENV['TENANCY_CENTRAL_DOMAINS'] = 'admin.example.com';
+
+        $request = Request::build(method: 'GET', path: '/ajx/x')
+            ->withAttribute('route_host', 'app.example.com')
+            ->withIdentity(Identity::asUser('user-1', 'tenant-b'));
+
+        $response = $this->dispatch($request, $this->container());
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('tenant-b', $this->routedTo, 'a non-listed host must still resolve its tenant as usual');
     }
 }

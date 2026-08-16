@@ -25,6 +25,8 @@ final readonly class TenantDetail
         public string $dbUsername,
         public string $status,
         public int $schemaVersion,
+        public ?string $parentTenantId = null,
+        public bool $canCreateSubTenants = false,
     ) {}
 
     public static function fromEntity(Tenant $t): self
@@ -40,6 +42,8 @@ final readonly class TenantDetail
             dbUsername:    $t->dbUsername,
             status:        strtolower($t->status->name),
             schemaVersion: $t->schemaVersion,
+            parentTenantId: $t->parentTenantId,
+            canCreateSubTenants: $t->canCreateSubTenants,
         );
     }
 
@@ -57,6 +61,8 @@ final readonly class TenantDetail
             'dbUsername'    => $this->dbUsername,
             'status'        => $this->status,
             'schemaVersion' => $this->schemaVersion,
+            'parentTenantId' => $this->parentTenantId,
+            'canCreateSubTenants' => $this->canCreateSubTenants,
         ];
     }
 }

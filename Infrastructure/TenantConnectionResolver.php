@@ -44,6 +44,67 @@ use Plugins\Logger\Infrastructure\NullLogger;
  */
 final class TenantConnectionResolver implements TenantConnectionResolverContract
 {
+    /**
+     * Decrypted-credential cache, keyed by "tenantId:ciphertextHash" -> [plaintext, expiresAt].
+     *
+     * This resolver is bound per request (a fresh instance per ModuleContainer),
+     * so an ordinary instance property would buy nothing across requests. A
+     * `static` property belongs to the CLASS, not the instance, so under a
+     * long-lived OpenSwoole worker it survives being rebuilt every request —
+     * decryptString() then runs once per tenant per worker instead of once per
+     * request. Under PHP-FPM each request is a fresh process, so this is a
+     * correctness-neutral no-op there.
+     *
+     * Deliberately NOT stored in CachePort: a shared/network cache (Redis, etc.)
+     * would put plaintext DB passwords somewhere new and persistent that anyone
+     * with cache access can read. Process memory only, bounded, and TTL'd.
+     *
+     * Keyed by a hash of the CIPHERTEXT (not just tenantId), so a credential
+     * rotation (new db_password_enc) is automatically a cache miss — no explicit
+     * invalidation needed for that case, only for invalidate() below.
+     *
+     * @var array<string, array{0: string, 1: int}>
+     */
+    private static array $credentialCache = [];
+
+    /** FIFO cap so a large or churning fleet cannot grow this without bound in one worker. */
+    private const MAX_CACHED_CREDENTIALS = 500;
+
+    /**
+     * Worker-local record of "this process has seen a connectivity failure for
+     * this tenant since its last success" — see recordFailure()/recordSuccess().
+     * Bounded the same way as $credentialCache, for the same reason.
+     */
+    private static array $dirtyTenants = [];
+
+    private const MAX_DIRTY_TENANTS = 500;
+
+    /**
+     * Worker-local, SHORT-lived memo of "the breaker is open for this tenant"
+     * (tenantId => expires-at unix timestamp). Only ever caches the REJECT
+     * verdict, never the pass verdict — caching "closed" locally would let this
+     * worker keep serving a tenant for up to the memo's TTL after another worker
+     * observed it fail, which breaks the fail-closed guarantee documented on
+     * this class. Caching "open" locally is always safe in that regard: it can
+     * only make rejection faster, never wrongly grant access. This is what
+     * spares the cache backend from being hammered with has() checks by every
+     * request hitting an already-known-dead tenant.
+     */
+    private static array $breakerOpenL1 = [];
+
+    private const BREAKER_L1_TTL = 2;
+
+    private const MAX_BREAKER_L1_ENTRIES = 500;
+
+    /**
+     * Least-recently-used order of warm connection names this worker has built,
+     * used to cap how many stay open at once — see capWarmConnections(). A
+     * long-lived Swoole worker that has ever served N distinct tenants would
+     * otherwise hold N open sockets/file handles forever, even though only a
+     * handful are ever active at once.
+     */
+    private static array $warmOrder = [];
+
     public function __construct(
         private readonly DatabaseConnectionManagerContract $connections,
         private readonly TenantRegistryContract $registry,
@@ -59,6 +120,10 @@ final class TenantConnectionResolver implements TenantConnectionResolverContract
          * perfectly healthy tenant.
          */
         private readonly int $breakerWindow = 60,
+        /** TTL (seconds) for the in-process decrypted-credential cache above. */
+        private readonly int $credentialCacheTtl = 300,
+        /** Cap on distinct warm tenant connections held open by one worker. */
+        private readonly int $maxWarmConnections = 200,
     ) {}
 
     public function for(string $tenantId): DatabasePort
@@ -73,7 +138,7 @@ final class TenantConnectionResolver implements TenantConnectionResolverContract
         $tenant = $this->registry->find($tenantId)
             ?? $this->reject($name, UnknownTenantException::for($tenantId));
 
-           
+
         try {
             $this->guardStatus($tenant);
         } catch (TenantUnavailableException $e) {
@@ -84,8 +149,10 @@ final class TenantConnectionResolver implements TenantConnectionResolverContract
 
         // Reuse a healthy warm connection; otherwise build it lazily.
         if (!$this->connections->has($name)) {
+            $this->capWarmConnections();
             $this->connections->register($name, $this->configFor($tenant));
         }
+        $this->touchWarm($name);
 
         return $this->connections->connection($name);
     }
@@ -99,12 +166,15 @@ final class TenantConnectionResolver implements TenantConnectionResolverContract
     {
         $this->registry->forget($tenantId);
         $this->connections->close('tenant:' . $tenantId);
+        $this->forgetCredentialCache($tenantId);
+        unset(self::$warmOrder['tenant:' . $tenantId]);
     }
 
     /** Close any stale warm handle, then throw the routing decision. */
     private function reject(string $connectionName, \Throwable $e): never
     {
         $this->connections->close($connectionName);
+        unset(self::$warmOrder[$connectionName]);
         throw $e;
     }
 
@@ -119,6 +189,8 @@ final class TenantConnectionResolver implements TenantConnectionResolverContract
         $key   = $this->failKey($tenantId);
         $count = $this->cache->increment($key);
         $this->connections->close('tenant:' . $tenantId);
+        unset(self::$warmOrder['tenant:' . $tenantId]);
+        $this->markDirty($tenantId);
 
         // Establish the sliding window on the FIRST failure of a window. Redis
         // INCR preserves an existing TTL, so subsequent increments keep counting
@@ -129,6 +201,7 @@ final class TenantConnectionResolver implements TenantConnectionResolverContract
 
         if ($count >= $this->breakerThreshold) {
             $this->cache->set($this->breakerKey($tenantId), 1, $this->breakerCooldown);
+            $this->rememberBreakerOpenLocally($tenantId);
             $this->logger->error('Tenant DB circuit breaker opened', [
                 'tenant_id' => $tenantId,
                 'failures'  => $count,
@@ -138,9 +211,27 @@ final class TenantConnectionResolver implements TenantConnectionResolverContract
         }
     }
 
-    /** Clear the failure counter after a healthy request. */
+    /**
+     * Clear the failure counter after a healthy request.
+     *
+     * Only actually calls the cache backend when THIS worker has locally
+     * witnessed a failure for this tenant since its last reset — most requests,
+     * for most tenants, never do. Skipping the round-trip otherwise trades a
+     * little cross-worker healing speed for one fewer network call per request:
+     * a failure counter this worker never touched still self-expires via
+     * $breakerWindow regardless (see recordFailure()), so the breaker's actual
+     * safety property — trip after N failures within the window — is unchanged;
+     * only how FAST an unrelated worker's stale streak gets reset early is.
+     */
     public function recordSuccess(string $tenantId): void
     {
+        unset(self::$breakerOpenL1[$tenantId]);
+
+        if (!isset(self::$dirtyTenants[$tenantId])) {
+            return;
+        }
+
+        unset(self::$dirtyTenants[$tenantId]);
         $this->cache->delete($this->failKey($tenantId));
     }
 
@@ -156,8 +247,58 @@ final class TenantConnectionResolver implements TenantConnectionResolverContract
 
     private function guardBreaker(string $tenantId): void
     {
-        if ($this->cache->has($this->breakerKey($tenantId))) {
+        $expiresAt = self::$breakerOpenL1[$tenantId] ?? null;
+        if ($expiresAt !== null && $expiresAt > time()) {
+            // Known open, recently — skip the network round-trip entirely.
             throw TenantUnavailableException::breakerOpen($tenantId);
+        }
+
+        if ($this->cache->has($this->breakerKey($tenantId))) {
+            $this->rememberBreakerOpenLocally($tenantId);
+            throw TenantUnavailableException::breakerOpen($tenantId);
+        }
+    }
+
+    /** Bounded, TTL'd local memo that the breaker is open — see $breakerOpenL1. */
+    private function rememberBreakerOpenLocally(string $tenantId): void
+    {
+        if (count(self::$breakerOpenL1) >= self::MAX_BREAKER_L1_ENTRIES && !isset(self::$breakerOpenL1[$tenantId])) {
+            array_shift(self::$breakerOpenL1);
+        }
+        self::$breakerOpenL1[$tenantId] = time() + self::BREAKER_L1_TTL;
+    }
+
+    /** Track that this worker has seen a connectivity failure for $tenantId — see recordSuccess(). */
+    private function markDirty(string $tenantId): void
+    {
+        if (count(self::$dirtyTenants) >= self::MAX_DIRTY_TENANTS && !isset(self::$dirtyTenants[$tenantId])) {
+            array_shift(self::$dirtyTenants);
+        }
+        self::$dirtyTenants[$tenantId] = true;
+    }
+
+    /** Mark a connection name as most-recently-used (moves it to the end). */
+    private function touchWarm(string $connectionName): void
+    {
+        unset(self::$warmOrder[$connectionName]);
+        self::$warmOrder[$connectionName] = true;
+    }
+
+    /**
+     * Close and forget the least-recently-used warm connections until there is
+     * room for one more, so a worker that has ever served more than
+     * $maxWarmConnections distinct tenants does not hold that many open sockets
+     * forever — only the ones actually in recent rotation.
+     */
+    private function capWarmConnections(): void
+    {
+        while (count(self::$warmOrder) >= $this->maxWarmConnections) {
+            $oldest = array_key_first(self::$warmOrder);
+            if ($oldest === null) {
+                return;
+            }
+            unset(self::$warmOrder[$oldest]);
+            $this->connections->close($oldest);
         }
     }
 
@@ -176,7 +317,7 @@ final class TenantConnectionResolver implements TenantConnectionResolverContract
             return new SQLiteConfiguration($tenant->dbName);
         }
 
-        $password = $this->crypto->decryptString($tenant->dbPasswordEnc);
+        $password = $this->decryptedPassword($tenant);
 
         return match ($tenant->dbDriver) {
             'pgsql' => new PostgreSQLConfiguration(
@@ -194,6 +335,42 @@ final class TenantConnectionResolver implements TenantConnectionResolverContract
                 password: $password,
             ),
         };
+    }
+
+    /**
+     * Decrypt once per tenant per worker instead of once per request (see the
+     * class-level docblock on $credentialCache for why this is `static` and why
+     * it is not CachePort-backed).
+     */
+    private function decryptedPassword(Tenant $tenant): string
+    {
+        $key = $tenant->tenantId . ':' . hash('crc32b', $tenant->dbPasswordEnc);
+        $now = time();
+
+        $cached = self::$credentialCache[$key] ?? null;
+        if ($cached !== null && $cached[1] > $now) {
+            return $cached[0];
+        }
+
+        $password = $this->crypto->decryptString($tenant->dbPasswordEnc);
+
+        if (count(self::$credentialCache) >= self::MAX_CACHED_CREDENTIALS) {
+            array_shift(self::$credentialCache);
+        }
+        self::$credentialCache[$key] = [$password, $now + $this->credentialCacheTtl];
+
+        return $password;
+    }
+
+    /** Drop every cached credential entry for this tenant, regardless of ciphertext. */
+    private function forgetCredentialCache(string $tenantId): void
+    {
+        $prefix = $tenantId . ':';
+        foreach (self::$credentialCache as $key => $_) {
+            if (str_starts_with($key, $prefix)) {
+                unset(self::$credentialCache[$key]);
+            }
+        }
     }
 
     private function failKey(string $tenantId): string
