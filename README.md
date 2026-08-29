@@ -239,6 +239,5 @@ front the DB tier with ProxySQL/PgBouncer under PHP-FPM.
 
 ## Documentation
 
-- [CLAUDE.md](CLAUDE.md) — this plugin's contract, config and rules (start here).
 - [docs/TENANCY.md](docs/TENANCY.md) — the full Tenancy reference.
 - [Kernel guides](https://github.com/AlfaCode-Team/hkm-kernel/tree/main/docs/guides) — the framework contracts this plugin builds on.
