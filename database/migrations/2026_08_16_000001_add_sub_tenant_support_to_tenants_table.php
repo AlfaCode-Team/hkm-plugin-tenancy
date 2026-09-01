@@ -39,7 +39,7 @@ return new class implements MigrationInterface {
         $schema->table('tenants', static function ($t) use ($enforcesForeignKeys) {
             $t->char('parent_tenant_id', 31)->nullable()->after('tenant_id')
                 ->comment('tenant_id of the creating tenant, or NULL for a top-level tenant');
-            $t->boolean('can_create_sub_tenants')->default(0)
+            $t->boolean('can_create_sub_tenants')->default(false)
                 ->comment('1 = a platform admin has granted this tenant permission to create sub-tenants');
 
             $t->index(['parent_tenant_id'], 'idx_parent_tenant_id');
