@@ -41,7 +41,12 @@ return new class implements MigrationInterface {
             $t->unique(['hostname'], 'uniq_hostname');
             $t->unique(['verification_token'], 'uniq_verification_token');
             $t->index(['tenant_id'], 'idx_tenant_id');
-            $t->index(['status'], 'idx_status');
+            // Table-qualified: PostgreSQL index names are unique per SCHEMA, not
+            // per table the way MySQL's are, and `tenants` already took the bare
+            // `idx_status` in 000001. On MySQL both spellings work, so the clash
+            // only ever appeared as `relation "idx_status" already exists` on
+            // Postgres — where this migration then could not run at all.
+            $t->index(['status'], 'idx_tenant_hosts_status');
 
             $t->foreign('tenant_id')->references('tenant_id')->on('tenants')->onDelete('cascade');
 
