@@ -23,6 +23,7 @@
         "alfacode-team/hkm-plugin-audit": "dev-main",
         "alfacode-team/hkm-plugin-i18n": "dev-main",
         "alfacode-team/hkm-plugin-security-filters": "dev-main",
+        "alfacode-team/hkm-plugin-user": "dev-main",
         "phpunit/phpunit": "^11 || ^12 || ^13"
     },
     "repositories": [
