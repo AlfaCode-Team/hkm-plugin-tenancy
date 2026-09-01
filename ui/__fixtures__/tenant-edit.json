@@ -1,0 +1,6 @@
+{
+    "__placeholder": true,
+    "//": "Dump the real props with: $this->ground()->pageflow('/route')->writeFixture(__DIR__ . '/../ui/__fixtures__/tenant-edit.json'); until then this page's tests are skipped.",
+    "component": "Tenant/Edit",
+    "props": {}
+}

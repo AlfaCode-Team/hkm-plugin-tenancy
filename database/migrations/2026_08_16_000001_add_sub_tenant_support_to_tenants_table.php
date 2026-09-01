@@ -23,7 +23,20 @@ use AlfaCode\LetMigrate\Contract\SchemaBuilderInterface;
 return new class implements MigrationInterface {
     public function up(SchemaBuilderInterface $schema): void
     {
-        $schema->table('tenants', static function ($t) {
+        // SQLite has no `ALTER TABLE … ADD CONSTRAINT`: a foreign key can only
+        // be declared inside CREATE TABLE, and `tenants` already exists by the
+        // time this runs. Emitting it anyway failed the whole migration on
+        // SQLite — which is the engine `hkm ground migrate` reaches first, so
+        // this one statement blocked every plugin downstream of tenancy from
+        // being testable at all.
+        //
+        // The column, the index and the application-level rule are identical on
+        // every engine; only the declared constraint is skipped, and SQLite does
+        // not enforce foreign keys by default anyway (`PRAGMA foreign_keys` is
+        // OFF), so nothing that was being enforced stops being enforced.
+        $enforcesForeignKeys = $schema->getDriver()->getName() !== 'sqlite';
+
+        $schema->table('tenants', static function ($t) use ($enforcesForeignKeys) {
             $t->char('parent_tenant_id', 31)->nullable()->after('tenant_id')
                 ->comment('tenant_id of the creating tenant, or NULL for a top-level tenant');
             $t->boolean('can_create_sub_tenants')->default(0)
@@ -31,10 +44,12 @@ return new class implements MigrationInterface {
 
             $t->index(['parent_tenant_id'], 'idx_parent_tenant_id');
 
-            $t->foreign('parent_tenant_id')
-                ->references('tenant_id')->on('tenants')
-                ->restrictOnDelete()
-                ->name('fk_tenants_parent_tenant_id');
+            if ($enforcesForeignKeys) {
+                $t->foreign('parent_tenant_id')
+                    ->references('tenant_id')->on('tenants')
+                    ->restrictOnDelete()
+                    ->name('fk_tenants_parent_tenant_id');
+            }
         });
     }
 
@@ -47,14 +62,22 @@ return new class implements MigrationInterface {
         // constraint still references, so the FK has to be gone (its own
         // executed statement) before the column-drop statement below even
         // compiles, let alone runs.
-        $schema->table('tenants', static function ($t) {
-            $t->dropForeign('fk_tenants_parent_tenant_id');
-        });
+        // Only where up() created it.
+        if ($schema->getDriver()->getName() !== 'sqlite') {
+            $schema->table('tenants', static function ($t) {
+                $t->dropForeign('fk_tenants_parent_tenant_id');
+            });
+        }
 
         $schema->table('tenants', static function ($t) {
-            // dropColumn('parent_tenant_id') auto-drops its single-column index
-            // too (see add_platform_admin_to_users.php for why an explicit
-            // dropIndex after that would fail).
+            // The index goes FIRST, explicitly. MySQL drops a single-column
+            // index along with its column, so relying on that worked there —
+            // and nowhere else: SQLite refuses the column drop while an index
+            // still names it ("error in index idx_parent_tenant_id after drop
+            // column"). LetMigrate now compiles drops dependents-first, so
+            // declaring both in one closure emits DROP INDEX then DROP COLUMN
+            // on every engine, MySQL included.
+            $t->dropIndex('idx_parent_tenant_id');
             $t->dropColumn('parent_tenant_id');
             $t->dropColumn('can_create_sub_tenants');
         });
