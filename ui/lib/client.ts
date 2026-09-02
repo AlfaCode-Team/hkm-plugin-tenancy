@@ -86,7 +86,7 @@ function buildHeaders(method: string, hasBody: boolean): HeadersInit {
   return h;
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function fetchJson(method: string, path: string, body?: unknown): Promise<any> {
   const res = await fetch(API_BASE + path, {
     method,
     headers: buildHeaders(method, body !== undefined),
@@ -102,9 +102,36 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     throw new TenancyApiError(err.message ?? `HTTP ${res.status}`, res.status, err.fields ?? {});
   }
 
+  return parsed;
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const parsed = await fetchJson(method, path, body);
+
   // Endpoints wrap payloads in a { data: … } envelope. Unwrap it here so callers
   // work with the value directly; tolerant when a bare value is returned.
   return (parsed && typeof parsed === "object" && "data" in parsed ? parsed.data : parsed) as T;
+}
+
+export interface Page<T> {
+  data: T;
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** Like request(), but keeps the { data, meta } envelope's pagination info instead of discarding it. */
+async function requestPage<T>(method: string, path: string): Promise<Page<T>> {
+  const parsed = await fetchJson(method, path);
+  const data = (parsed && typeof parsed === "object" && "data" in parsed ? parsed.data : parsed) as T;
+  const meta = (parsed && typeof parsed === "object" && parsed.meta) || {};
+
+  return {
+    data,
+    total: typeof meta.total === "number" ? meta.total : Array.isArray(data) ? (data as unknown[]).length : 0,
+    limit: typeof meta.limit === "number" ? meta.limit : 50,
+    offset: typeof meta.offset === "number" ? meta.offset : 0,
+  };
 }
 
 export const tenancyClient = {
@@ -117,7 +144,15 @@ export const tenancyClient = {
     ),
 
   // Tenant administration (platform-admin only).
-  adminTenants: () => request<TenantDetail[]>("GET", "/admin/tenants"),
+  adminTenants: (params: { limit?: number; offset?: number; search?: string; status?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.limit != null) qs.set("limit", String(params.limit));
+    if (params.offset != null) qs.set("offset", String(params.offset));
+    if (params.search) qs.set("search", params.search);
+    if (params.status) qs.set("status", params.status);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return requestPage<TenantDetail[]>("GET", `/admin/tenants${suffix}`);
+  },
   adminTenant: (id: string) => request<TenantDetail>("GET", `/admin/tenants/${encodeURIComponent(id)}`),
   adminCreateTenant: (payload: Record<string, unknown>) =>
     request<TenantDetail>("POST", "/admin/tenants", payload),
@@ -125,6 +160,10 @@ export const tenancyClient = {
     request<TenantDetail>("PUT", `/admin/tenants/${encodeURIComponent(id)}`, payload),
   adminDeleteTenant: (id: string, dropDatabase: boolean) =>
     request<null>("DELETE", `/admin/tenants/${encodeURIComponent(id)}`, { drop_database: dropDatabase }),
+  adminSuspendTenant: (id: string) =>
+    request<TenantDetail>("POST", `/admin/tenants/${encodeURIComponent(id)}/suspend`),
+  adminReactivateTenant: (id: string) =>
+    request<TenantDetail>("POST", `/admin/tenants/${encodeURIComponent(id)}/reactivate`),
 
   // Invitations.
   acceptInvitation: (token: string) => request<{ tenantId: string }>("POST", "/invitations/accept", { token }),

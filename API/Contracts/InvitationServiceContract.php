@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Plugins\Tenancy\API\Contracts;
 
 use Plugins\Tenancy\API\DTOs\InvitationResult;
+use Plugins\Tenancy\Domain\Entities\Invitation;
 
 /**
  * InvitationServiceContract — email-based tenant onboarding.
@@ -40,4 +41,33 @@ interface InvitationServiceContract
 
     /** Revoke a pending invitation (no longer acceptable). */
     public function revoke(string $rawToken): void;
+
+    /** @return list<Invitation> every invitation for a tenant, newest first. */
+    public function listForTenant(string $tenantId): array;
+
+    /**
+     * Revoke a pending invitation by id, scoped to $tenantId so one tenant's
+     * admin cannot revoke another tenant's invite by guessing an id.
+     *
+     * @throws \AlfacodeTeam\PhpServicePlatform\Kernel\Exceptions\ServiceException not found / wrong tenant
+     */
+    public function revokeById(string $tenantId, string $inviteId): void;
+
+    /**
+     * Rotate an existing invite's token + expiry and return the new one-time
+     * raw token, e.g. to re-send the email. Scoped to $tenantId like revokeById().
+     *
+     * @throws \AlfacodeTeam\PhpServicePlatform\Kernel\Exceptions\ServiceException not found / wrong tenant
+     */
+    public function resend(string $tenantId, string $inviteId, int $ttlSeconds = 604800): InvitationResult;
+
+    /**
+     * Invite several emails at once. Each entry is processed independently —
+     * one bad entry (invalid email, duplicate pending invite) does not abort
+     * the rest — so the caller can show a per-row result.
+     *
+     * @param list<array{email: string, role?: string}> $entries
+     * @return list<array{email: string, ok: bool, inviteId: ?string, token: ?string, error: ?string}>
+     */
+    public function inviteBulk(string $tenantId, array $entries, string $invitedBy, int $ttlSeconds = 604800): array;
 }

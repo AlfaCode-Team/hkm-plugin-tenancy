@@ -16,8 +16,16 @@ use Plugins\Tenancy\Domain\Entities\Tenant;
  */
 interface TenantWriteStore
 {
-    /** @return list<Tenant> Every tenant in the registry. */
-    public function all(): array;
+    /**
+     * A page of the registry, optionally filtered by a name/slug search term
+     * and/or exact status. Ordered the same way the old unbounded all() was.
+     *
+     * @return list<Tenant>
+     */
+    public function paginate(int $limit, int $offset, ?string $search = null, ?int $status = null): array;
+
+    /** Total rows matching the same filters paginate() would apply — for UI page counts. */
+    public function count(?string $search = null, ?int $status = null): int;
 
     /** One tenant by id, or null when it does not exist. */
     public function find(string $tenantId): ?Tenant;
@@ -30,6 +38,22 @@ interface TenantWriteStore
 
     /** Flip a provisioning tenant to active and stamp its schema version. */
     public function markActive(string $tenantId, int $schemaVersion): void;
+
+    /**
+     * Sub-tenants whose parent is this tenant id, name-ordered.
+     *
+     * @return list<Tenant>
+     */
+    public function findByParent(string $parentTenantId): array;
+
+    /** True when at least one tenant has this id as its parent — guards delete(). */
+    public function hasChildren(string $tenantId): bool;
+
+    /** Number of tenants with this id as their parent — the createSubTenant() quota check. */
+    public function countByParent(string $parentTenantId): int;
+
+    /** Grant or revoke the "may create sub-tenants" flag — the super-admin gate. */
+    public function setCanCreateSubTenants(string $tenantId, bool $allowed): void;
 
     /**
      * Update safe metadata. Null values are left untouched.

@@ -66,6 +66,58 @@ final class InvitationRepository implements InvitationStore
         return $row === null ? null : Invitation::fromRow($row);
     }
 
+    public function findById(string $inviteId): ?Invitation
+    {
+        try {
+            $row = $this->central->queryOne(
+                'SELECT invite_id, tenant_id, email, role, status, expires_at, invited_by
+                   FROM tenant_invitations WHERE invite_id = :iid LIMIT 1',
+                ['iid' => $inviteId],
+            );
+        } catch (\Throwable $e) {
+            throw new RepositoryException('Failed to load invitation.', layer: 'repository.tenancy', previous: $e);
+        }
+
+        return $row === null ? null : Invitation::fromRow($row);
+    }
+
+    public function listForTenant(string $tenantId): array
+    {
+        try {
+            $rows = $this->central->query(
+                'SELECT invite_id, tenant_id, email, role, status, expires_at, invited_by
+                   FROM tenant_invitations
+                  WHERE tenant_id = :tid
+                  ORDER BY invite_id DESC',
+                ['tid' => $tenantId],
+            );
+        } catch (\Throwable $e) {
+            throw new RepositoryException('Failed to list invitations.', layer: 'repository.tenancy', previous: $e);
+        }
+
+        return array_map(static fn (array $r): Invitation => Invitation::fromRow($r), $rows);
+    }
+
+    public function rotateToken(string $inviteId, string $newTokenHash, \DateTimeImmutable $newExpiresAt): void
+    {
+        try {
+            $this->central->execute(
+                'UPDATE tenant_invitations
+                    SET token_hash = :hash, expires_at = :exp, status = :status, updated_at = :now
+                  WHERE invite_id = :iid',
+                [
+                    'hash'   => $newTokenHash,
+                    'exp'    => $newExpiresAt->format('Y-m-d H:i:s'),
+                    'status' => InvitationStatus::Pending->value,
+                    'now'    => self::now(),
+                    'iid'    => $inviteId,
+                ],
+            );
+        } catch (\Throwable $e) {
+            throw new RepositoryException('Failed to rotate invitation token.', layer: 'repository.tenancy', previous: $e);
+        }
+    }
+
     public function pendingExists(string $tenantId, string $email): bool
     {
         try {

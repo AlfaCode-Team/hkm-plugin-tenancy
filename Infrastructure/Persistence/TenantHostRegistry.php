@@ -57,12 +57,12 @@ final class TenantHostRegistry implements TenantHostRegistryContract
         );
 
         if ($row === null) {
-            $this->cache->set($key, self::MISS, $this->ttl);
+            $this->cache->set($key, self::MISS, $this->jitteredTtl());
             return null;
         }
 
         $tenantId = (string) $row['tenant_id'];
-        $this->cache->set($key, $tenantId, $this->ttl);
+        $this->cache->set($key, $tenantId, $this->jitteredTtl());
 
         return $tenantId;
     }
@@ -70,6 +70,14 @@ final class TenantHostRegistry implements TenantHostRegistryContract
     public function forget(string $hostname): void
     {
         $this->cache->delete($this->key($this->normalise($hostname)));
+    }
+
+    /** +/-10% jitter so a fleet of hot host keys does not expire in lockstep and stampede the DB. */
+    private function jitteredTtl(): int
+    {
+        $spread = max(1, intdiv($this->ttl, 10));
+
+        return max(1, $this->ttl + random_int(-$spread, $spread));
     }
 
     private function normalise(string $hostname): string

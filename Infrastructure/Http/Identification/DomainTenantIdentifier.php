@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Plugins\Tenancy\Infrastructure\Http\Identification;
 
 use AlfacodeTeam\PhpServicePlatform\Kernel\Http\Request;
+use Plugins\Tenancy\Domain\ValueObjects\Hostname;
 
 /**
  * DomainTenantIdentifier — the storefront model: the tenant is the left-most
@@ -69,8 +70,13 @@ final class DomainTenantIdentifier implements TenantIdentifier
 
         $label = $this->candidateLabel($host);
 
-        // Reserved infra/marketing sub-domains are central, never a tenant.
-        if ($label === null || isset($this->reserved[$label])) {
+        // Reserved infra/marketing sub-domains are central, never a tenant. The
+        // shape check rejects a candidate before it ever becomes a registry
+        // lookup / cache key / connection name — without it, an attacker
+        // sending many distinct garbage Host headers could otherwise inflate
+        // the registry's negative-cache with one throwaway MISS entry per
+        // request instead of being turned away for free, in-process.
+        if ($label === null || isset($this->reserved[$label]) || !Hostname::isValid($label)) {
             return '';
         }
 

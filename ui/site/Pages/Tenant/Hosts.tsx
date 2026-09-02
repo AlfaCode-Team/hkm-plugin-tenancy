@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Head, Link } from "@pageflow/react";
+import { Link } from "@pageflow/react";
 import { Button } from "@ui/button";
 import { Input } from "@ui/input";
 import { Label } from "@ui/label";
@@ -105,116 +105,113 @@ export default function TenantHosts() {
   }
 
   return (
-    <>
-      <Head title="Tenant hosts" />
-      <main className="mx-auto max-w-3xl p-8">
-        <header className="mb-6 flex items-center justify-between">
-          <h1 className="text-2xl font-semibold">Custom domains</h1>
-          <Button variant="link" asChild>
-            <Link href="/tenants">← Your tenants</Link>
-          </Button>
-        </header>
+    <main className="mx-auto max-w-3xl p-8">
+      <header className="mb-6 flex items-center justify-between">
+        <h1 className="text-2xl font-semibold">Custom domains</h1>
+        <Button variant="link" asChild>
+          <Link href="/tenants">← Your tenants</Link>
+        </Button>
+      </header>
 
-        {error && (
-          <Alert variant="destructive" className="mb-4">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-        {notice && (
-          <Alert className="mb-4">
-            <AlertDescription>{notice}</AlertDescription>
-          </Alert>
-        )}
+      {error && (
+        <Alert variant="destructive" className="mb-4">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+      {notice && (
+        <Alert className="mb-4">
+          <AlertDescription>{notice}</AlertDescription>
+        </Alert>
+      )}
 
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle className="text-base">Add a domain</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={add} className="flex flex-wrap items-end gap-3">
-              <div className="flex-1 space-y-1.5">
-                <Label htmlFor="hostname">Hostname</Label>
-                <Input
-                  id="hostname"
-                  placeholder="app.example.com"
-                  value={hostname}
-                  onChange={(e) => setHostname(e.target.value)}
-                />
-              </div>
-              <div className="w-40 space-y-1.5">
-                <Label htmlFor="ip">IP (optional)</Label>
-                <Input
-                  id="ip"
-                  placeholder="203.0.113.10"
-                  value={ip}
-                  onChange={(e) => setIp(e.target.value)}
-                />
-              </div>
-              <Button type="submit" disabled={adding || hostname.trim() === ""}>
-                {adding ? "Adding…" : "Add host"}
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle className="text-base">Add a domain</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={add} className="flex flex-wrap items-end gap-3">
+            <div className="flex-1 space-y-1.5">
+              <Label htmlFor="hostname">Hostname</Label>
+              <Input
+                id="hostname"
+                placeholder="app.example.com"
+                value={hostname}
+                onChange={(e) => setHostname(e.target.value)}
+              />
+            </div>
+            <div className="w-40 space-y-1.5">
+              <Label htmlFor="ip">IP (optional)</Label>
+              <Input
+                id="ip"
+                placeholder="203.0.113.10"
+                value={ip}
+                onChange={(e) => setIp(e.target.value)}
+              />
+            </div>
+            <Button type="submit" disabled={adding || hostname.trim() === ""}>
+              {adding ? "Adding…" : "Add host"}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
 
-        {instructions && (
-          <Alert className="mb-6">
-            <AlertDescription>
-              <p className="mb-2 font-medium">Publish this DNS record, then verify:</p>
-              <pre className="overflow-auto rounded bg-muted p-3 text-xs">
-                {instructions.dns_record.type}  {instructions.dns_record.name}  {instructions.dns_record.value}
-              </pre>
-              <p className="mt-2">{instructions.instructions}</p>
-            </AlertDescription>
-          </Alert>
-        )}
+      {instructions && (
+        <Alert className="mb-6">
+          <AlertDescription>
+            <p className="mb-2 font-medium">Publish this DNS record, then verify:</p>
+            <pre className="overflow-auto rounded bg-muted p-3 text-xs">
+              {instructions.dns_record.type}  {instructions.dns_record.name}  {instructions.dns_record.value}
+            </pre>
+            <p className="mt-2">{instructions.instructions}</p>
+          </AlertDescription>
+        </Alert>
+      )}
 
-        {loading ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
-        ) : hosts.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No custom domains yet.</p>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Hostname</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+      {loading ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : hosts.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No custom domains yet.</p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Hostname</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {hosts.map((h) => (
+              <TableRow key={h.host_id}>
+                <TableCell>
+                  {h.hostname}
+                  {h.is_primary && (
+                    <Badge variant="outline" className="ml-2 border-transparent bg-indigo-100 text-indigo-700">
+                      primary
+                    </Badge>
+                  )}
+                </TableCell>
+                <TableCell>
+                  <StatusBadge status={h.status} />
+                </TableCell>
+                <TableCell className="space-x-1 text-right">
+                  <Button variant="ghost" size="sm" onClick={() => verify(h)}>
+                    Verify
+                  </Button>
+                  {!h.is_primary && (
+                    <Button variant="ghost" size="sm" onClick={() => makePrimary(h)}>
+                      Make primary
+                    </Button>
+                  )}
+                  <Button variant="ghost" size="sm" onClick={() => remove(h)}>
+                    Remove
+                  </Button>
+                </TableCell>
               </TableRow>
-            </TableHeader>
-            <TableBody>
-              {hosts.map((h) => (
-                <TableRow key={h.host_id}>
-                  <TableCell>
-                    {h.hostname}
-                    {h.is_primary && (
-                      <Badge variant="outline" className="ml-2 border-transparent bg-indigo-100 text-indigo-700">
-                        primary
-                      </Badge>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <StatusBadge status={h.status} />
-                  </TableCell>
-                  <TableCell className="space-x-1 text-right">
-                    <Button variant="ghost" size="sm" onClick={() => verify(h)}>
-                      Verify
-                    </Button>
-                    {!h.is_primary && (
-                      <Button variant="ghost" size="sm" onClick={() => makePrimary(h)}>
-                        Make primary
-                      </Button>
-                    )}
-                    <Button variant="ghost" size="sm" onClick={() => remove(h)}>
-                      Remove
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
-      </main>
-    </>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+    </main>
   );
 }

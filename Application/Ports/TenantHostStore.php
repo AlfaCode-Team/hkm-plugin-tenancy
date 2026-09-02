@@ -16,6 +16,13 @@ interface TenantHostStore
     /** @return list<TenantHost> all hosts for a tenant (any status). */
     public function allForTenant(string $tenantId): array;
 
+    /**
+     * How many hosts a tenant has (any status) — a COUNT(*), not a row scan, so
+     * the quota check in TenantHostService::add() stays cheap on a tenant with
+     * many hosts.
+     */
+    public function countForTenant(string $tenantId): int;
+
     /** A single host by id, scoped to the tenant, or null. */
     public function find(string $tenantId, int $hostId): ?TenantHost;
 

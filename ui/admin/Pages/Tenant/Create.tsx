@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { Head, Link, router } from "@pageflow/react";
+import { useState, type ReactNode } from "react";
+import { Link, router } from "@pageflow/react";
+import { AdminLayout } from "@pageflow/admin";
 import { Button } from "@ui/button";
 import { Input } from "@ui/input";
 import { Label } from "@ui/label";
@@ -76,95 +77,94 @@ export default function TenantCreate() {
   }
 
   return (
-    <>
-      <Head title="New tenant — Admin" />
-      <main className="mx-auto max-w-xl p-8">
-        <Button variant="link" className="px-0" asChild>
-          <Link href="/tenants/manage">← Back to tenants</Link>
-        </Button>
-        <h1 className="mb-1 mt-2 text-2xl font-semibold">New tenant</h1>
-        <p className="mb-6 text-sm text-muted-foreground">
-          Creates the registry row and provisions an isolated database.
-        </p>
+    <main className="mx-auto max-w-xl p-8">
+      <Button variant="link" className="px-0" asChild>
+        <Link href="/tenants/manage">← Back to tenants</Link>
+      </Button>
+      <h1 className="mb-1 mt-2 text-2xl font-semibold">New tenant</h1>
+      <p className="mb-6 text-sm text-muted-foreground">
+        Creates the registry row and provisions an isolated database.
+      </p>
 
-        {error && (
-          <Alert variant="destructive" className="mb-4">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
+      {error && (
+        <Alert variant="destructive" className="mb-4">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
-        <Card>
-          <CardContent className="pt-6">
-            <form onSubmit={submit} className="space-y-4">
-              <Field label="Name" htmlFor="name" error={errors.name}>
-                <Input id="name" value={form.name} onChange={set("name")} placeholder="Acme Inc" />
+      <Card>
+        <CardContent className="pt-6">
+          <form onSubmit={submit} className="space-y-4">
+            <Field label="Name" htmlFor="name" error={errors.name}>
+              <Input id="name" value={form.name} onChange={set("name")} placeholder="Acme Inc" />
+            </Field>
+            <Field label="Slug" htmlFor="slug" error={errors.slug}>
+              <Input id="slug" value={form.slug} onChange={set("slug")} placeholder="acme" />
+            </Field>
+            <Field label="Database driver" htmlFor="driver" error={errors.driver}>
+              <Select value={form.driver} onValueChange={(v) => setForm((f) => ({ ...f, driver: v }))}>
+                <SelectTrigger id="driver">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {DRIVERS.map((d) => (
+                    <SelectItem key={d} value={d}>
+                      {d}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Database name" htmlFor="db_name" error={errors.db_name}>
+                <Input id="db_name" value={form.db_name} onChange={set("db_name")} placeholder="tnt_acme" />
               </Field>
-              <Field label="Slug" htmlFor="slug" error={errors.slug}>
-                <Input id="slug" value={form.slug} onChange={set("slug")} placeholder="acme" />
+              <Field label="Database user" htmlFor="db_user" error={errors.db_user}>
+                <Input id="db_user" value={form.db_user} onChange={set("db_user")} placeholder="acme_user" />
               </Field>
-              <Field label="Database driver" htmlFor="driver" error={errors.driver}>
-                <Select value={form.driver} onValueChange={(v) => setForm((f) => ({ ...f, driver: v }))}>
-                  <SelectTrigger id="driver">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {DRIVERS.map((d) => (
-                      <SelectItem key={d} value={d}>
-                        {d}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+            </div>
+            <Field label="Database password" htmlFor="db_password" error={errors.db_password}>
+              <Input
+                id="db_password"
+                type="password"
+                value={form.db_password}
+                onChange={set("db_password")}
+                autoComplete="new-password"
+              />
+            </Field>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Database host" htmlFor="db_host" error={errors.db_host}>
+                <Input id="db_host" value={form.db_host} onChange={set("db_host")} />
               </Field>
-              <div className="grid grid-cols-2 gap-4">
-                <Field label="Database name" htmlFor="db_name" error={errors.db_name}>
-                  <Input id="db_name" value={form.db_name} onChange={set("db_name")} placeholder="tnt_acme" />
-                </Field>
-                <Field label="Database user" htmlFor="db_user" error={errors.db_user}>
-                  <Input id="db_user" value={form.db_user} onChange={set("db_user")} placeholder="acme_user" />
-                </Field>
-              </div>
-              <Field label="Database password" htmlFor="db_password" error={errors.db_password}>
+              <Field label="Database port" htmlFor="db_port" error={errors.db_port}>
                 <Input
-                  id="db_password"
-                  type="password"
-                  value={form.db_password}
-                  onChange={set("db_password")}
-                  autoComplete="new-password"
+                  id="db_port"
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={form.db_port}
+                  onChange={set("db_port")}
+                  placeholder="3306"
                 />
               </Field>
-              <div className="grid grid-cols-2 gap-4">
-                <Field label="Database host" htmlFor="db_host" error={errors.db_host}>
-                  <Input id="db_host" value={form.db_host} onChange={set("db_host")} />
-                </Field>
-                <Field label="Database port" htmlFor="db_port" error={errors.db_port}>
-                  <Input
-                    id="db_port"
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={form.db_port}
-                    onChange={set("db_port")}
-                    placeholder="3306"
-                  />
-                </Field>
-              </div>
+            </div>
 
-              <div className="flex gap-3 pt-2">
-                <Button type="submit" disabled={saving}>
-                  {saving ? "Provisioning…" : "Create tenant"}
-                </Button>
-                <Button type="button" variant="outline" asChild>
-                  <Link href="/tenants/manage">Cancel</Link>
-                </Button>
-              </div>
-            </form>
-          </CardContent>
-        </Card>
-      </main>
-    </>
+            <div className="flex gap-3 pt-2">
+              <Button type="submit" disabled={saving}>
+                {saving ? "Provisioning…" : "Create tenant"}
+              </Button>
+              <Button type="button" variant="outline" asChild>
+                <Link href="/tenants/manage">Cancel</Link>
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
+    </main>
   );
 }
+
+TenantCreate.layout = (page: ReactNode) => <AdminLayout>{page}</AdminLayout>;
 
 function Field({
   label,

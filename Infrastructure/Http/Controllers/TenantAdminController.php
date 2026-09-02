@@ -29,15 +29,33 @@ final class TenantAdminController extends ApiController
         private readonly TenantAdminServiceContract $tenants,
     ) {}
 
-    /** GET /ajx/admin/tenants — list every tenant in the registry. */
+    /**
+     * GET /ajx/admin/tenants — a page of the registry.
+     * Query params: limit (default 50, capped server-side), offset, search
+     * (name/slug substring), status (active|provisioning|suspended|deleted).
+     */
     public function index(): Response
     {
         if (($guard = $this->guard()) !== null) {
             return $guard;
         }
 
+        $request = $this->resolveRequest();
+        $limit   = $request->integer('limit') ?: 50;
+        $offset  = $request->integer('offset') ?: 0;
+        $search  = $request->filled('search') ? $request->string('search') : null;
+        $status  = $request->filled('status') ? $request->string('status') : null;
+
         return $this->ok([
-            'data' => array_map(static fn ($t) => $t->toArray(), $this->tenants->list()),
+            'data' => array_map(
+                static fn ($t) => $t->toArray(),
+                $this->tenants->list($limit, $offset, $search, $status),
+            ),
+            'meta' => [
+                'total'  => $this->tenants->count($search, $status),
+                'limit'  => $limit,
+                'offset' => $offset,
+            ],
         ]);
     }
 
@@ -94,6 +112,76 @@ final class TenantAdminController extends ApiController
         $this->tenants->delete($tenantId, $dropDatabase);
 
         return $this->noContent();
+    }
+
+    /** POST /ajx/admin/tenants/{tenantId}/suspend — stop routing without deleting anything. */
+    public function suspend(string $tenantId): Response
+    {
+        if (($guard = $this->guard()) !== null) {
+            return $guard;
+        }
+
+        return $this->ok($this->tenants->suspend($tenantId)->toArray());
+    }
+
+    /** POST /ajx/admin/tenants/{tenantId}/reactivate — the inverse of suspend(). */
+    public function reactivate(string $tenantId): Response
+    {
+        if (($guard = $this->guard()) !== null) {
+            return $guard;
+        }
+
+        return $this->ok($this->tenants->reactivate($tenantId)->toArray());
+    }
+
+    /** GET /ajx/admin/tenants/{tenantId}/health — ping the tenant's own database. */
+    public function health(string $tenantId): Response
+    {
+        if (($guard = $this->guard()) !== null) {
+            return $guard;
+        }
+
+        return $this->ok($this->tenants->healthCheck($tenantId));
+    }
+
+    /**
+     * GET /ajx/admin/tenants/{tenantId}/children — sub-tenants created BY this
+     * tenant, so the admin resource UI can always show them nested under it.
+     */
+    public function children(string $tenantId): Response
+    {
+        if (($guard = $this->guard()) !== null) {
+            return $guard;
+        }
+
+        return $this->ok(['data' => array_map(
+            static fn ($t) => $t->toArray(),
+            $this->tenants->listChildren($tenantId),
+        )]);
+    }
+
+    /**
+     * POST /ajx/admin/tenants/{tenantId}/sub-tenants/grant — the super-admin
+     * grant: let this tenant create its own sub-tenants (self-service, via
+     * SubTenantController).
+     */
+    public function grantSubTenants(string $tenantId): Response
+    {
+        if (($guard = $this->guard()) !== null) {
+            return $guard;
+        }
+
+        return $this->ok($this->tenants->grantSubTenantCreation($tenantId)->toArray());
+    }
+
+    /** POST /ajx/admin/tenants/{tenantId}/sub-tenants/revoke — the inverse of grantSubTenants(). */
+    public function revokeSubTenants(string $tenantId): Response
+    {
+        if (($guard = $this->guard()) !== null) {
+            return $guard;
+        }
+
+        return $this->ok($this->tenants->revokeSubTenantCreation($tenantId)->toArray());
     }
 
     /** Deny non-admins. Returns a Response to short-circuit, or null to proceed. */

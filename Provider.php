@@ -15,6 +15,7 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Worker\WorkerPipeline;
 use Plugins\Auth\API\Contracts\AuthServiceContract;
 use Plugins\Audit\API\Contracts\AuditServiceContract;
 use Plugins\Database\API\Contracts\DatabaseConnectionManagerContract;
+use Plugins\Tenancy\API\Contracts\AuditQueryServiceContract;
 use Plugins\Tenancy\API\Contracts\InvitationServiceContract;
 use Plugins\Tenancy\API\Contracts\MembershipServiceContract;
 use Plugins\Tenancy\API\Contracts\TenantAdminServiceContract;
@@ -23,6 +24,7 @@ use Plugins\Tenancy\API\Contracts\TenantHostRegistryContract;
 use Plugins\Tenancy\API\Contracts\TenantHostServiceContract;
 use Plugins\Tenancy\API\Contracts\TenantRegistryContract;
 use Plugins\Tenancy\Application\Listeners\AssignTenantMembershipOnUserRegistered;
+use Plugins\Tenancy\Application\Ports\AuditReader;
 use Plugins\Tenancy\Application\Ports\InvitationStore;
 use Plugins\Tenancy\Application\Ports\MembershipReader;
 use Plugins\Tenancy\Application\Ports\MembershipWriter;
@@ -30,21 +32,26 @@ use Plugins\Tenancy\Application\Ports\DnsResolver;
 use Plugins\Tenancy\Application\Ports\TenantProvisioner;
 use Plugins\Tenancy\Application\Ports\TenantWriteStore;
 use Plugins\Tenancy\Application\Ports\TenantHostStore;
+use Plugins\Tenancy\Application\Services\AuditQueryService;
 use Plugins\Tenancy\Application\Services\InvitationService;
 use Plugins\Tenancy\Application\Services\MembershipService;
 use Plugins\Tenancy\Application\Services\TenantAdminService;
 use Plugins\Tenancy\Application\Services\TenantHostService;
 use Plugins\Tenancy\Infrastructure\Dns\SystemDnsResolver;
+use Plugins\Tenancy\Infrastructure\Http\Controllers\AuditLogController;
 use Plugins\Tenancy\Infrastructure\Http\Controllers\InvitationController;
+use Plugins\Tenancy\Infrastructure\Http\Controllers\SubTenantController;
 use Plugins\Tenancy\Infrastructure\Http\Controllers\TenantAdminController;
 use Plugins\Tenancy\Infrastructure\Http\Controllers\TenantController;
 use Plugins\Tenancy\Infrastructure\Http\Controllers\TenantHostController;
+use Plugins\Tenancy\Infrastructure\Http\Controllers\TenantInvitationController;
 use Plugins\User\API\Contracts\UserServiceContract;
 use Plugins\Tenancy\Infrastructure\Http\Identification\ClaimTenantIdentifier;
 use Plugins\Tenancy\Infrastructure\Http\Identification\DomainTenantIdentifier;
 use Plugins\Tenancy\Infrastructure\Http\Identification\HostTenantIdentifier;
 use Plugins\Tenancy\Infrastructure\Http\Identification\TenantIdentifier;
 use Plugins\Tenancy\Infrastructure\Http\Stages\TenantContextStage;
+use Plugins\Tenancy\Infrastructure\Persistence\AuditLogRepository;
 use Plugins\Tenancy\Infrastructure\Persistence\InvitationRepository;
 use Plugins\Tenancy\Infrastructure\Persistence\MembershipRepository;
 use Plugins\Tenancy\Infrastructure\Persistence\TenantAdminRepository;
@@ -101,6 +108,7 @@ final class Provider implements ModuleContract
             MembershipServiceContract::class,
             InvitationServiceContract::class,
             TenantAdminServiceContract::class,
+            AuditQueryServiceContract::class,
         ];
     }
 
@@ -126,6 +134,7 @@ final class Provider implements ModuleContract
                 breakerThreshold: self::intEnv('TENANCY_BREAKER_THRESHOLD', 5),
                 breakerCooldown: self::intEnv('TENANCY_BREAKER_COOLDOWN', 30),
                 breakerWindow: self::intEnv('TENANCY_BREAKER_WINDOW', 60),
+                maxWarmConnections: self::intEnv('TENANCY_MAX_WARM_CONNECTIONS', 200),
             );
         });
 
@@ -164,7 +173,12 @@ final class Provider implements ModuleContract
 
         $container->bindInternal(DnsResolver::class, static fn(): DnsResolver => new SystemDnsResolver());
 
-        $container->bind(TenantHostServiceContract::class, static fn($c): TenantHostServiceContract =>
+        // singleton(): stateless within a request (ModuleContainer is itself
+        // request-scoped, rebuilt fresh every request/job — see CoreContainer vs
+        // ModuleContainer in the kernel docs), so resolving it a second time in
+        // the same request (e.g. once from a stage, once from a controller)
+        // reuses the same instance instead of constructing a throwaway twin.
+        $container->singleton(TenantHostServiceContract::class, static fn($c): TenantHostServiceContract =>
             new TenantHostService(
                 hosts: $c->make(TenantHostStore::class),
                 dns: $c->make(DnsResolver::class),
@@ -200,10 +214,16 @@ final class Provider implements ModuleContract
         // Control plane only — verifies seats + audits. No Auth dependency:
         // token minting lives in TenantController, which keeps the container
         // graph acyclic (AuthService → UserService → MembershipService).
-        $container->bind(MembershipServiceContract::class, static fn($c): MembershipServiceContract =>
+        // singleton() — see the TenantHostServiceContract binding above for why.
+        // TenantContextStage resolves this on every tenant-scoped request; a
+        // route handler that also needs it (e.g. TenantController) reuses that
+        // same instance instead of building a second one.
+        $container->singleton(MembershipServiceContract::class, static fn($c): MembershipServiceContract =>
             new MembershipService(
                 memberships: $c->make(MembershipReader::class),
                 audit: $c->make(AuditServiceContract::class),
+                cache: $c->make(CachePort::class),
+                activeMembershipCacheTtl: self::intEnv('TENANCY_MEMBERSHIP_CACHE_TTL', 10),
             ));
 
         // The HTTP boundary composes the verified seat with the Auth module
@@ -238,17 +258,44 @@ final class Provider implements ModuleContract
             );
         });
 
-        $container->bind(TenantAdminServiceContract::class, static fn($c): TenantAdminServiceContract =>
+        // singleton() — see the TenantHostServiceContract binding above for why.
+        $container->singleton(TenantAdminServiceContract::class, static fn($c): TenantAdminServiceContract =>
             new TenantAdminService(
                 store: $c->make(TenantWriteStore::class),
                 provisioner: $c->make(TenantProvisioner::class),
                 registry: $c->make(TenantRegistryContract::class),
                 crypto: $c->make(EncryptionPort::class),
                 identity: $c->make(\AlfacodeTeam\PhpServicePlatform\Kernel\Security\Identity::class),
+                connections: $c->make(TenantConnectionResolverContract::class),
+                audit: $c->make(AuditServiceContract::class),
+                maxSubTenantsPerParent: self::intEnv('TENANCY_MAX_SUB_TENANTS_PER_PARENT', 10),
             ));
 
         $container->bindInternal(TenantAdminController::class, static fn($c): TenantAdminController =>
             new TenantAdminController($c->make(TenantAdminServiceContract::class)));
+
+        // Self-service sub-tenant creation — same published contract, distinct
+        // controller (no platform-admin guard; authorization is per-tenant and
+        // lives in the service, see TenantAdminService::createSubTenant()).
+        $container->bindInternal(SubTenantController::class, static fn($c): SubTenantController =>
+            new SubTenantController($c->make(TenantAdminServiceContract::class)));
+
+        // ── audit trail query (admin-facing read of the central audit_log) ───
+        // Read counterpart to writing through Audit's published
+        // AuditServiceContract — reading the trail back is gated to platform
+        // admins, so it is its own service rather than an open port.
+        $container->bindInternal(AuditReader::class, static fn($c): AuditReader =>
+            new AuditLogRepository($c->make(DatabaseConnectionManagerContract::class)->default()));
+
+        // singleton() — see the TenantHostServiceContract binding above for why.
+        $container->singleton(AuditQueryServiceContract::class, static fn($c): AuditQueryServiceContract =>
+            new AuditQueryService(
+                reader: $c->make(AuditReader::class),
+                identity: $c->make(\AlfacodeTeam\PhpServicePlatform\Kernel\Security\Identity::class),
+            ));
+
+        $container->bindInternal(AuditLogController::class, static fn($c): AuditLogController =>
+            new AuditLogController($c->make(AuditQueryServiceContract::class)));
 
         // ── invitations (email onboarding) ───────────────────────────────────
         $container->bindInternal(InvitationStore::class, static fn($c): InvitationStore =>
@@ -261,11 +308,13 @@ final class Provider implements ModuleContract
         $container->bindInternal(AssignTenantMembershipOnUserRegistered::class, static fn($c): AssignTenantMembershipOnUserRegistered =>
             new AssignTenantMembershipOnUserRegistered($c->make(MembershipWriter::class)));
 
-        $container->bind(InvitationServiceContract::class, static fn($c): InvitationServiceContract =>
+        // singleton() — see the TenantHostServiceContract binding above for why.
+        $container->singleton(InvitationServiceContract::class, static fn($c): InvitationServiceContract =>
             new InvitationService(
                 invitations: $c->make(InvitationStore::class),
                 memberships: $c->make(MembershipWriter::class),
                 audit: $c->make(AuditServiceContract::class),
+                identity: $c->make(\AlfacodeTeam\PhpServicePlatform\Kernel\Security\Identity::class),
             ));
 
         // ── HTTP boundary for the invitation flow ────────────────────────────
@@ -274,6 +323,11 @@ final class Provider implements ModuleContract
                 $c->make(InvitationServiceContract::class),
                 $c->make(UserServiceContract::class),
             ));
+
+        // Tenant-admin side (list/send/resend/revoke/bulk) — distinct from the
+        // public accept() endpoint above.
+        $container->bindInternal(TenantInvitationController::class, static fn($c): TenantInvitationController =>
+            new TenantInvitationController($c->make(InvitationServiceContract::class)));
     }
 
     public function boot(HttpPipeline $http, CliPipeline $cli, WorkerPipeline $worker, EventBus $events): void
