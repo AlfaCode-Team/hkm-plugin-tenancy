@@ -199,12 +199,22 @@ it fleet-migrates every active tenant by default.
 |---|---|---|
 | `TENANCY_MODE` | `claim` | tenant identification: `claim` (Identity.tenantId) \| `domain` (Host sub-domain label) \| `host` (full Host via `tenant_hosts`) |
 | `TENANCY_BASE_DOMAINS` | — | domain mode: comma-separated base domains a tenant label hangs off |
-| `TENANCY_RESERVED_SUBDOMAINS` | `www,api,admin,…` | domain mode: labels that are never tenants (map to central) |
+| `TENANCY_RESERVED_SUBDOMAINS` | `www,api,admin,…` | domain mode: labels that are never tenants (identify to `''`) |
+| `TENANCY_CENTRAL_DOMAINS` | — | hosts served from the CENTRAL connection, no tenant scope (`*.` wildcard allowed) |
+| `TENANCY_CONTROL_PLANE` | `false` | **bool.** `true` disables the whole stage for this deployment |
+| `TENANCY_EXEMPT` | `/ping` | paths served with no tenant scope (trailing `*` = prefix match) |
 | `TENANCY_REGISTRY_TTL` | `60` | registry cache TTL (s) |
 | `TENANCY_BREAKER_THRESHOLD` | `5` | connectivity failures before the breaker opens |
 | `TENANCY_BREAKER_WINDOW` | `60` | sliding window (s) failures must occur within |
 | `TENANCY_BREAKER_COOLDOWN` | `30` | breaker open window (s) |
 | `TENANCY_TEMPLATE_PATH` | bundled | tenant template migrations path |
+| `TENANCY_MEMBERSHIP_CACHE_TTL` | `10` | per-request seat re-check cache TTL (s) |
+| `TENANCY_MAX_WARM_CONNECTIONS` | `200` | warm tenant connections held per worker |
+| `TENANCY_MAX_HOSTS_PER_TENANT` | — | cap on custom hosts a tenant may claim |
+| `TENANCY_MAX_SUB_TENANTS_PER_PARENT` | — | cap on sub-tenants under one parent |
+| `TENANCY_TOKEN_TTL` | — | invitation / host-verification token lifetime (s) |
+| `TENANCY_DNS_CHALLENGE_PREFIX` | — | TXT record name prefix for host verification |
+| `TENANCY_DNS_VALUE_PREFIX` | — | TXT record value prefix for host verification |
 
 ## Strict routing — every host is a tenant
 
@@ -215,6 +225,48 @@ request that cannot be scoped — an unknown host, or no tenant claim/cookie —
 connection. Register every served host (`tenant:host:add <host> --verified` in
 host mode). Control-plane code that needs central pins it explicitly via the
 `ConnectionManager` default.
+
+### `TENANCY_BASE_DOMAINS` and `TENANCY_CENTRAL_DOMAINS` are BOTH needed
+
+They are not alternatives and they are not duplicates — they answer different
+questions, at different layers, and in `domain` mode a deployment needs both:
+
+| | `TENANCY_BASE_DOMAINS` | `TENANCY_CENTRAL_DOMAINS` |
+|---|---|---|
+| Answers | *which tenant is this host?* | *should this host be tenant-scoped at all?* |
+| Read by | `DomainTenantIdentifier` (via `Provider`) | `TenantContextStage::isCentralDomain()` |
+| Applies in | `TENANCY_MODE=domain` only | **every** mode, always |
+| Grammar | plain suffixes — `shop.example` | exact host, or `*.parent` wildcard |
+| Effect | strips the suffix; left-most label is the tenant id | skips identification entirely, serves CENTRAL |
+
+The coupling is the part that bites. Under strict routing an identifier that
+returns `''` is a **404**, not a fallback to central — so every non-tenant host
+under a base domain must be listed in `TENANCY_CENTRAL_DOMAINS` or it stops
+being served:
+
+```dotenv
+TENANCY_MODE=domain
+TENANCY_BASE_DOMAINS=shop.example
+TENANCY_CENTRAL_DOMAINS=shop.example,admin.shop.example
+```
+
+- `acme.shop.example` → base domain stripped → tenant `acme` → tenant DB.
+- `shop.example` (the apex) → identifier returns `''`. **Without** it being in
+  `TENANCY_CENTRAL_DOMAINS` that is a 404, and the apex login the tenant
+  sub-domains depend on is unreachable.
+- `admin.shop.example` → `admin` is a default `TENANCY_RESERVED_SUBDOMAINS`
+  label, so the identifier also returns `''` → same 404 unless listed here.
+
+Being on the reserved list is therefore **not** enough to serve a host; it only
+stops the label being read as a tenant id. `TENANCY_CENTRAL_DOMAINS` is what
+actually serves it.
+
+`TENANCY_CENTRAL_DOMAINS` is also the narrow tool next to the blunt one:
+`TENANCY_CONTROL_PLANE=true` is a **bool** that switches the stage off for the
+*entire deployment* (right for a dedicated control-plane project);
+`TENANCY_CENTRAL_DOMAINS` exempts named hosts when ONE deployment serves both
+kinds at once. Setting `TENANCY_CONTROL_PLANE` to a hostname fails the boot —
+`ValidateConfigStage` rejects it as a non-bool.
 
 ## Activation & per-request cost
 

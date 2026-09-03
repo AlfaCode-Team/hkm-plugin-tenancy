@@ -63,12 +63,22 @@ Tenancy's `database.management` requirement loads with it automatically.
 
 **`domain` mode + session login — cross-subdomain cookie.** Control-plane routes
 (`/auth/login`, `/ajx/me/tenants`, `/ajx/tenants/{id}/select`) run on the
-apex/central host (`shop.localhost` → `''` → central); tenant-scoped routes run on
+apex/central host (`shop.localhost`); tenant-scoped routes run on
 `<tenant>.shop.localhost` (→ that tenant's DB). For the apex login's session to
 carry to the tenant sub-domains, set the session cookie's domain to the shared
 base: `SESSION_COOKIE_DOMAIN=.shop.localhost` (host-only otherwise = 401 on the
-sub-domain). Reserved sub-domains (`TENANCY_RESERVED_SUBDOMAINS`: www, api, admin,
-…) resolve to central, never a tenant.
+sub-domain).
+
+**The apex must be listed in `TENANCY_CENTRAL_DOMAINS`.** Under strict routing
+the identifier returning `''` — which is what the apex and every reserved
+sub-domain (`TENANCY_RESERVED_SUBDOMAINS`: www, api, admin, …) produce — is a
+**404, not a fallback to central**. Being reserved only stops a label being read
+as a tenant id; it does not get the host served:
+
+```dotenv
+TENANCY_BASE_DOMAINS=shop.localhost
+TENANCY_CENTRAL_DOMAINS=shop.localhost,admin.shop.localhost
+```
 
 ---
 

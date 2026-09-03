@@ -23,9 +23,13 @@ use Plugins\Tenancy\Domain\ValueObjects\Hostname;
  * Base domains are configured via TENANCY_BASE_DOMAINS (comma-separated). With
  * no base domain configured, the left-most label of a multi-label host is used.
  *
- * RESERVED sub-domains (www, api, admin, …) are NOT tenants: they map to the
- * central connection (return '') so infrastructure/marketing hosts keep working
- * instead of 404-ing as an unknown tenant. Configure via TENANCY_RESERVED_SUBDOMAINS.
+ * RESERVED sub-domains (www, api, admin, …) are NOT tenants: they return ''
+ * rather than being read as a tenant id. Configure via TENANCY_RESERVED_SUBDOMAINS.
+ *
+ * '' does NOT mean "serve central". TenantContextStage is strict: a request that
+ * resolves to no tenant is a 404. To actually SERVE the apex or a reserved
+ * sub-domain, list that host in TENANCY_CENTRAL_DOMAINS — that is the only thing
+ * which routes a host to the central connection.
  */
 final class DomainTenantIdentifier implements TenantIdentifier
 {
@@ -70,7 +74,8 @@ final class DomainTenantIdentifier implements TenantIdentifier
 
         $label = $this->candidateLabel($host);
 
-        // Reserved infra/marketing sub-domains are central, never a tenant. The
+        // Reserved infra/marketing sub-domains are never a tenant id (serving
+        // them at all requires TENANCY_CENTRAL_DOMAINS — see the class docblock). The
         // shape check rejects a candidate before it ever becomes a registry
         // lookup / cache key / connection name — without it, an attacker
         // sending many distinct garbage Host headers could otherwise inflate
