@@ -1,7 +1,7 @@
 {
     "name": "tenancy",
-    "version": "1.1.2",
-    "kernel": "^1.0",
+    "version": "1.1.3",
+    "kernel": "^1.13.1",
     "solves": "tenancy.routing",
     "type": "module",
     "description": "Multi-tenant control plane: tenant registry + per-tenant database routing. Identifies the tenant by TENANCY_MODE — 'claim' (default: authenticated Identity.tenantId, the SaaS/JWT model) or 'domain' (the Host sub-domain, the anonymous storefront model) — then rebinds an isolated tenant DatabasePort into the request container so every repository talks to the correct tenant database. Database-per-tenant isolation (MySQL/PostgreSQL/SQLite) on top of plugins/Database ConnectionManager.",
