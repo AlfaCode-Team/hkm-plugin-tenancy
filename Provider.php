@@ -305,7 +305,25 @@ final class Provider implements ModuleContract
             new MembershipRepository($c->make(DatabaseConnectionManagerContract::class)->default()));
 
 
-        $container->bindInternal(AssignTenantMembershipOnUserRegistered::class, static fn($c): AssignTenantMembershipOnUserRegistered =>
+        // bind(), NOT bindInternal(): boot() subscribes this class to
+        // user.registered, and the EventBus resolves a listener from OUTSIDE every
+        // module scope (OnDemandLoader rebinds the bus with forContainer(), and the
+        // resolution stack is empty at dispatch). Internal made that unreachable,
+        // and the way it failed hid the cause completely:
+        //
+        //   1. ModuleContainer::make() throws ScopeViolationException
+        //   2. EventBus::resolveListener() catches it and falls back to `new`
+        //   3. `new` throws ArgumentCountError — the listener takes an argument
+        //   4. dispatch() logs "EventBus listener failed / Too few arguments to
+        //      function AssignTenantMembershipOnUserRegistered::__construct()"
+        //
+        // So the seat was silently never assigned, and the only trace read like a
+        // broken listener rather than a binding in the wrong scope.
+        //
+        // MembershipWriter below stays internal on purpose: make() pushes a
+        // binding's OWN scope onto the resolution stack while its factory runs, so
+        // the $c->make(MembershipWriter::class) here still resolves as tenancy.
+        $container->bind(AssignTenantMembershipOnUserRegistered::class, static fn($c): AssignTenantMembershipOnUserRegistered =>
             new AssignTenantMembershipOnUserRegistered($c->make(MembershipWriter::class)));
 
         // singleton() — see the TenantHostServiceContract binding above for why.
