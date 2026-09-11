@@ -52,8 +52,17 @@ return new class implements MigrationInterface {
             $t->index(['db_shard', 'status'], 'idx_shard_status');
 
             $t->engine('InnoDB');
+            // NO ->collation() here on purpose. Pinning utf8mb4_0900_ai_ci
+            // made these tables MySQL-8-only (it does not exist on MySQL 5.7 or
+            // on MariaDB at all) and, worse, left them disagreeing with every
+            // other table in the same central database: LetMigrate's Blueprint
+            // default — and its own `migrations` tracking table — is
+            // utf8mb4_unicode_ci. A foreign key may not cross collations, so a
+            // project whose tables took the default could not point at these,
+            // and `t.tenant_id = x.tenant_id` raised errno 1267. Inheriting the
+            // default keeps one collation per database, which is the only
+            // arrangement in which those keys and joins compile.
             $t->charset('utf8mb4');
-            $t->collation('utf8mb4_0900_ai_ci');
             $t->rowFormat('DYNAMIC');
         });
     }

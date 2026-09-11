@@ -40,8 +40,10 @@ return new class implements MigrationInterface {
             $t->foreign('tenant_id')->references('tenant_id')->on('tenants')->onDelete('cascade');
 
             $t->engine('InnoDB');
+            // No ->collation(): inherit LetMigrate's utf8mb4_unicode_ci default,
+            // so this table can carry a foreign key to `tenants`. See
+            // 2026_06_22_000001_create_tenants_table.php for the full reason.
             $t->charset('utf8mb4');
-            $t->collation('utf8mb4_0900_ai_ci');
             $t->rowFormat('DYNAMIC');
         });
     }
