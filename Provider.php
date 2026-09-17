@@ -20,6 +20,7 @@ use Plugins\Tenancy\API\Contracts\InvitationServiceContract;
 use Plugins\Tenancy\API\Contracts\MembershipServiceContract;
 use Plugins\Tenancy\API\Contracts\TenantAdminServiceContract;
 use Plugins\Tenancy\API\Contracts\TenantConnectionResolverContract;
+use Plugins\Tenancy\API\Contracts\TenantDatabaseProvisionerContract;
 use Plugins\Tenancy\API\Contracts\TenantHostRegistryContract;
 use Plugins\Tenancy\API\Contracts\TenantHostServiceContract;
 use Plugins\Tenancy\API\Contracts\TenantRegistryContract;
@@ -56,6 +57,7 @@ use Plugins\Tenancy\Infrastructure\Persistence\InvitationRepository;
 use Plugins\Tenancy\Infrastructure\Persistence\MembershipRepository;
 use Plugins\Tenancy\Infrastructure\Persistence\TenantAdminRepository;
 use Plugins\Tenancy\Infrastructure\Persistence\TenantHostRegistry;
+use Plugins\Tenancy\Infrastructure\Provisioning\DatabaseDdlProvisioner;
 use Plugins\Tenancy\Infrastructure\Provisioning\DdlTenantProvisioner;
 use Plugins\Tenancy\Infrastructure\Persistence\TenantHostRepository;
 use Plugins\Tenancy\Infrastructure\Persistence\TenantRegistry;
@@ -109,6 +111,11 @@ final class Provider implements ModuleContract
             InvitationServiceContract::class,
             TenantAdminServiceContract::class,
             AuditQueryServiceContract::class,
+            // Published so an application that mints its OWN tenant rows (a
+            // client-supplied tenant id, a database named after the tenant) can
+            // still reach this plugin's DDL instead of hand-writing CREATE
+            // DATABASE / CREATE USER / GRANT per driver.
+            TenantDatabaseProvisionerContract::class,
         ];
     }
 
@@ -247,11 +254,18 @@ final class Provider implements ModuleContract
         $container->bindInternal(TenantWriteStore::class, static fn($c): TenantWriteStore =>
             new TenantAdminRepository($c->make(DatabaseConnectionManagerContract::class)->default()));
 
+        // bind(), NOT bindInternal(): this one is PUBLISHED (see exposes()).
+        // The DDL primitives carry no tenant entity, so a consuming project can
+        // provision a database it registers itself without importing anything
+        // internal to this plugin.
+        $container->bind(TenantDatabaseProvisionerContract::class, static fn($c): TenantDatabaseProvisionerContract =>
+            new DatabaseDdlProvisioner($c->make(DatabaseConnectionManagerContract::class)->default()));
+
         $container->bindInternal(TenantProvisioner::class, static function ($c): TenantProvisioner {
             $template = env('TENANCY_TEMPLATE_PATH');
 
             return new DdlTenantProvisioner(
-                central: $c->make(DatabaseConnectionManagerContract::class)->default(),
+                ddl: $c->make(TenantDatabaseProvisionerContract::class),
                 templatePath: (is_string($template) && $template !== '')
                 ? $template
                 : __DIR__ . '/database/tenant-template',

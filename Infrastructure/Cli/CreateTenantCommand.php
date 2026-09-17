@@ -13,7 +13,8 @@ use AlfacodeTeam\PhpIoCli\Components\TextInput;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\DatabasePort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\EncryptionPort;
 use Plugins\Database\API\Contracts\DatabaseConnectionManagerContract;
-use Plugins\Tenancy\Infrastructure\Cli\Concerns\ManagesTenantDatabase;
+use Plugins\Tenancy\API\Contracts\TenantDatabaseProvisionerContract;
+use Plugins\Tenancy\Infrastructure\Provisioning\DatabaseDdlProvisioner;
 use Plugins\Tenancy\Domain\ValueObjects\SqlIdentifier;
 use Plugins\Tenancy\Domain\ValueObjects\TenantStatus;
 use Plugins\Tenancy\Support\TenantsFile;
@@ -33,14 +34,14 @@ use Plugins\Tenancy\Support\Token;
  */
 final class CreateTenantCommand extends AbstractCommand
 {
-    use ManagesTenantDatabase;
-
     /** Friendly label => canonical driver token (the interactive picker list). */
     private const DRIVERS = [
         'MySQL / MariaDB' => 'mysql',
         'PostgreSQL'      => 'pgsql',
         'SQL Server'      => 'sqlsrv',
     ];
+
+    private ?TenantDatabaseProvisionerContract $ddl = null;
 
     public function __construct(
         private readonly DatabaseConnectionManagerContract $connections,
@@ -197,7 +198,7 @@ final class CreateTenantCommand extends AbstractCommand
         // a SQL transaction on MySQL, so on ANY failure we COMPENSATE: drop the
         // user, drop the database (only if WE created it), delete the registry
         // row — leaving the system exactly as it was before the command ran.
-        $dbPreExisted = $this->databaseExists($central, $driver, $dbName);
+        $dbPreExisted = $this->ddl()->databaseExists($driver, $dbName);
         $dbCreated    = false;
         $userCreated  = false;
 
@@ -220,19 +221,13 @@ final class CreateTenantCommand extends AbstractCommand
 
             // 2. Create the isolated database (idempotent, driver-aware).
             if (!$dbPreExisted) {
-                if ($driver === 'pgsql') {
-                    $central->execute("CREATE DATABASE \"{$dbName}\"");
-                } elseif ($driver === 'sqlsrv') {
-                    $central->execute("IF DB_ID('{$dbName}') IS NULL CREATE DATABASE [{$dbName}]");
-                } else {
-                    $central->execute("CREATE DATABASE IF NOT EXISTS `{$dbName}`");
-                }
+                $this->ddl()->createDatabase($driver, $dbName);
                 $dbCreated = true;
             }
             $this->info("Database [{$dbName}] ready.");
 
             // 2b. Create the tenant DB user, granted on its database only.
-            $this->provisionUser($central, $driver, $dbName, $dbUser, $dbPass, $dbHost);
+            $this->ddl()->provisionUser($driver, $dbName, $dbUser, $dbPass, $dbHost);
             $userCreated = true;
             $this->info("User [{$dbUser}] granted on [{$dbName}].");
 
@@ -297,7 +292,7 @@ final class CreateTenantCommand extends AbstractCommand
         $central = $this->connections->default();
 
         $slugTaken = $central->queryOne('SELECT 1 AS p FROM tenants WHERE slug = :s', ['s' => $slug]) !== null;
-        $dbTaken   = $this->databaseExists($central, $driver, $dbName);
+        $dbTaken   = $this->ddl()->databaseExists($driver, $dbName);
         $template  = (string) ($this->option('template') ?: $this->defaultTemplatePath());
 
         $this->alertInfo('Dry run — nothing will be created', [
@@ -321,69 +316,6 @@ final class CreateTenantCommand extends AbstractCommand
     }
 
     /**
-     * Create the tenant DB user (idempotent) and grant it full privileges on
-     * its own database only. The password cannot be parameter-bound in DDL, so
-     * it is escaped and inlined; identifiers are validated by handle().
-     */
-    private function provisionUser(DatabasePort $db, string $driver, string $dbName, string $dbUser, string $dbPass, string $dbHost): void
-    {
-        if ($driver === 'pgsql') {
-            $pass   = "'" . str_replace("'", "''", $dbPass) . "'";
-            $exists = $db->queryOne('SELECT 1 AS present FROM pg_roles WHERE rolname = :u', ['u' => $dbUser]);
-            if ($exists === null) {
-                $db->execute("CREATE ROLE \"{$dbUser}\" LOGIN PASSWORD {$pass}");
-            } else {
-                $db->execute("ALTER ROLE \"{$dbUser}\" WITH LOGIN PASSWORD {$pass}");
-            }
-            // GRANT ON DATABASE only covers CONNECT/CREATE/TEMP. Make the role the
-            // database OWNER so it also owns the public schema (via
-            // pg_database_owner on PG 15+, and CREATE-to-PUBLIC on older versions)
-            // — otherwise its template migrations cannot CREATE TABLE.
-            $db->execute("GRANT ALL PRIVILEGES ON DATABASE \"{$dbName}\" TO \"{$dbUser}\"");
-            $db->execute("ALTER DATABASE \"{$dbName}\" OWNER TO \"{$dbUser}\"");
-
-            return;
-        }
-
-        if ($driver === 'sqlsrv') {
-            $pass  = "'" . str_replace("'", "''", $dbPass) . "'";
-            $login = str_replace(']', ']]', $dbUser);   // escape ] in the bracketed identifier
-            // Server-level LOGIN (idempotent) — create if absent, else force the
-            // password so a pre-existing login can't keep a stale credential.
-            $db->execute(
-                "IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '{$dbUser}') "
-                . "CREATE LOGIN [{$login}] WITH PASSWORD = {$pass}; "
-                . "ELSE ALTER LOGIN [{$login}] WITH PASSWORD = {$pass};"
-            );
-            // …then a database USER mapped to it, made db_owner of ONLY this database.
-            $db->execute(
-                "USE [{$dbName}]; "
-                . "IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '{$dbUser}') "
-                . "CREATE USER [{$login}] FOR LOGIN [{$login}]; "
-                . "ALTER ROLE db_owner ADD MEMBER [{$login}];"
-            );
-
-            return;
-        }
-
-        // MySQL / MariaDB — escape backslash then single quote for the literal.
-        // The account is pinned to the connecting host (NEVER '%'): for a local
-        // DB this is the loopback set so it works over both socket ('localhost')
-        // and TCP ('127.0.0.1'); a remote host is bound to that exact host only.
-        $pass = "'" . str_replace(['\\', "'"], ['\\\\', "\\'"], $dbPass) . "'";
-        foreach ($this->grantHosts($dbHost) as $host) {
-            // CREATE USER IF NOT EXISTS is a no-op — password included — when the
-            // account already exists, so ALTER USER forces the credential we just
-            // collected (otherwise a lingering account keeps its stale password
-            // and the tenant connection below fails "using password: YES").
-            $db->execute("CREATE USER IF NOT EXISTS '{$dbUser}'@'{$host}' IDENTIFIED BY {$pass}");
-            $db->execute("ALTER USER '{$dbUser}'@'{$host}' IDENTIFIED BY {$pass}");
-            $db->execute("GRANT ALL PRIVILEGES ON `{$dbName}`.* TO '{$dbUser}'@'{$host}'");
-        }
-        $db->execute('FLUSH PRIVILEGES');
-    }
-
-    /**
      * Compensating teardown — undo everything this run created, in reverse order
      * (user → database → registry row), so a failed provisioning leaves no trace.
      * Each step is isolated so one teardown failure cannot abort the rest.
@@ -402,7 +334,7 @@ final class CreateTenantCommand extends AbstractCommand
 
         if ($userCreated) {
             try {
-                $this->dropDatabaseUser($central, $driver, $dbUser, $dbHost);
+                $this->ddl()->dropUser($driver, $dbUser, $dbHost);
                 $this->info("· dropped user [{$dbUser}].");
             } catch (\Throwable $e) {
                 $this->error("· could not drop user [{$dbUser}]: {$e->getMessage()}");
@@ -411,7 +343,7 @@ final class CreateTenantCommand extends AbstractCommand
 
         if ($dbCreated) {
             try {
-                $this->dropDatabase($central, $driver, $dbName);
+                $this->ddl()->dropDatabase($driver, $dbName);
                 $this->info("· dropped database [{$dbName}].");
             } catch (\Throwable $e) {
                 $this->error("· could not drop database [{$dbName}]: {$e->getMessage()}");
@@ -426,6 +358,18 @@ final class CreateTenantCommand extends AbstractCommand
         }
 
         $this->warning('Rollback complete — nothing was left provisioned.');
+    }
+
+    /**
+     * The shared tenant DDL provisioner — CREATE/DROP DATABASE, CREATE/DROP
+     * USER, GRANT, per driver, escaped and idempotent. Held in one place (and
+     * published as {@see TenantDatabaseProvisionerContract}) so the command,
+     * the HTTP control plane and a consuming project cannot drift apart on the
+     * SQL that grants a tenant access to a database.
+     */
+    private function ddl(): TenantDatabaseProvisionerContract
+    {
+        return $this->ddl ??= new DatabaseDdlProvisioner($this->connections->default());
     }
 
     /** True only when STDIN is a real terminal — guards the prompt wizard. */
