@@ -328,6 +328,10 @@ final class Provider implements ModuleContract
             new ActiveTenantController(
                 $c->make(TenantSelectionPolicyContract::class),
                 $c->make(ActiveTenantStore::class),
+                // Optional so the switcher never 500s over the audit module;
+                // the routes declare `requires: ["audit.trail"]`, so where
+                // Audit is installed it is always bound here.
+                $c->has(AuditServiceContract::class) ? $c->make(AuditServiceContract::class) : null,
             ));
 
         // ── audit trail query (admin-facing read of the central audit_log) ───

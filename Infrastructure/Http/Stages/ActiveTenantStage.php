@@ -9,12 +9,14 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Http\Response;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\DatabasePort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Http\Contracts\HttpStageContract;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Security\Identity;
+use Plugins\Audit\API\Contracts\AuditServiceContract;
 use Plugins\Tenancy\API\Contracts\TenantConnectionResolverContract;
 use Plugins\Tenancy\API\Contracts\TenantHostRegistryContract;
 use Plugins\Tenancy\API\Contracts\TenantSelectionPolicyContract;
 use Plugins\Tenancy\Domain\Exceptions\TenantUnavailableException;
 use Plugins\Tenancy\Domain\Exceptions\UnknownTenantException;
 use Plugins\Tenancy\Infrastructure\ActiveTenantStore;
+use Plugins\Tenancy\Infrastructure\Http\Controllers\ActiveTenantController;
 use Throwable;
 
 /**
@@ -96,6 +98,13 @@ final class ActiveTenantStage implements HttpStageContract
             return null;
         }
 
+        // Hosts where switching is not offered behave as though no selection
+        // exists: no rescope, and no `tenant_host` either, which is what makes
+        // ActiveTenantController refuse to record a choice here.
+        if (!self::hostAllowed(self::host($request))) {
+            return null;
+        }
+
         $container = $request->container();
 
         if ($container === null || !$container->has(TenantSelectionPolicyContract::class)) {
@@ -106,6 +115,15 @@ final class ActiveTenantStage implements HttpStageContract
 
         if ($hostTenant === '') {
             return null;
+        }
+
+        // The switch endpoint itself is a HOST-level operation: it records the
+        // choice and writes the operator-side audit entry, both of which belong
+        // to the tenant that owns the hostname. Applying the current selection
+        // here would point DatabasePort — and so the audit writer — at whatever
+        // tenant the caller happens to be inside.
+        if (self::isSwitchEndpoint($request)) {
+            return $request->withAttribute('tenant_host', $hostTenant);
         }
 
         $store    = $container->make(ActiveTenantStore::class);
@@ -140,7 +158,13 @@ final class ActiveTenantStage implements HttpStageContract
             // Permitted, but the database is gone, suspended or still building.
             // Keep the choice: suspension is reversible and clearing it would
             // make an operator re-pick once the tenant comes back.
-            return $request->withAttribute('tenant_host', $hostTenant);
+            //
+            // `tenant_unavailable` names it, so a UI can say "X is unavailable,
+            // showing the host" — otherwise the person picked a tenant and
+            // silently landed somewhere else.
+            return $request
+                ->withAttribute('tenant_host', $hostTenant)
+                ->withAttribute('tenant_unavailable', $selected);
         }
 
         // ── the SIGN-IN tenant stays reachable ───────────────────────────────
@@ -175,6 +199,8 @@ final class ActiveTenantStage implements HttpStageContract
 
         $scoped = $this->narrow($identity, $selected, $role);
         $container->instance(Identity::class, $scoped);
+
+        $this->recordVisit($container, $store, $identity->userId, $hostTenant, $selected, $role);
 
         return $request
             ->withIdentity($scoped)
@@ -225,9 +251,7 @@ final class ActiveTenantStage implements HttpStageContract
             return '';
         }
 
-        $host = strtolower(trim((string) ($request->attribute('route_host') ?? $request->host())));
-        $host = preg_replace('/:\d+$/', '', $host) ?? $host;
-        $host = trim($host, '.');
+        $host = self::host($request);
 
         if ($host === '') {
             return '';
@@ -238,6 +262,113 @@ final class ActiveTenantStage implements HttpStageContract
         } catch (Throwable) {
             return '';
         }
+    }
+
+    /**
+     * Record the entry in the ENTERED tenant's own audit trail, once per entry.
+     *
+     * A policy may grant access with no seat — a parent admin inside a child —
+     * and such a visitor never appears in the child's member list. This entry
+     * is how the child learns someone outside it read its data. It is written
+     * HERE, after the rebind, because this is the first moment the request's
+     * DatabasePort is the child's: the Audit plugin writes through the
+     * request's connection, so a record made at the switch endpoint lands in
+     * the host's trail instead (which is where ActiveTenantController puts the
+     * operator-side entry).
+     *
+     * Only when Audit is in this request's graph; a deployment that wants the
+     * child-side record on every route makes `audit.trail` essential.
+     * Best-effort: an audit outage never blocks the request.
+     */
+    private function recordVisit($container, ActiveTenantStore $store, string $userId, string $host, string $tenant, string $role): void
+    {
+        if (!$container->has(AuditServiceContract::class)) {
+            return;
+        }
+
+        $already = $store->audited($host);
+        if ($already === null || $already === $tenant) {
+            return; // no session to remember it in, or already recorded
+        }
+
+        try {
+            $container->make(AuditServiceContract::class)->record(
+                'tenant.switch.visit',
+                $userId,
+                $tenant,
+                ['host_tenant' => $host, 'tenant' => $tenant, 'role' => $role],
+            );
+            $store->markAudited($host, $tenant);
+        } catch (Throwable) {
+            // Best-effort by the Audit contract's own policy.
+        }
+    }
+
+    /** Is this request for ActiveTenantController — the switch endpoint itself? */
+    private static function isSwitchEndpoint(Request $request): bool
+    {
+        $entry = $request->attribute('route_entry', []);
+
+        // The exact class, not a suffix: a project controller that merely ends
+        // in `ActiveTenantController` must not be exempted from its selection.
+        return is_array($entry)
+            && str_starts_with((string) ($entry['handler'] ?? ''), ActiveTenantController::class . '@');
+    }
+
+    /**
+     * The hostname being browsed, normalised: the DomainResolver-validated
+     * `route_host` in preference to the caller-controlled Host header.
+     */
+    public static function host(Request $request): string
+    {
+        $host = strtolower(trim((string) ($request->attribute('route_host') ?? $request->host())));
+        $host = preg_replace('/:\d+$/', '', $host) ?? $host;
+
+        return trim($host, '.');
+    }
+
+    /**
+     * TENANCY_SELECTION_HOSTS — where switching is offered at all.
+     *
+     * Comma-separated patterns; `*` matches any run of characters, so
+     * `app.*,organizer.*` names the two console labels on every brand domain,
+     * and `*.example.com` names every host under one. Empty (the default)
+     * keeps the historical behaviour: every host.
+     *
+     * Worth setting on any deployment that has public pages. A selection
+     * rescopes EVERYTHING on the host it applies to — on a public site that
+     * means votes, checkouts and signups landing in whichever tenant the
+     * operator last looked at. Cookies are normally host-only, so a choice made
+     * on the console does not follow the operator there; this closes the other
+     * half, a choice made deliberately on the public host.
+     */
+    public static function hostAllowed(string $host): bool
+    {
+        $raw = trim((string) (env('TENANCY_SELECTION_HOSTS', '') ?? ''));
+
+        if ($raw === '') {
+            return true;
+        }
+
+        if ($host === '') {
+            return false;
+        }
+
+        foreach (explode(',', $raw) as $pattern) {
+            $pattern = strtolower(trim($pattern));
+
+            if ($pattern === '') {
+                continue;
+            }
+
+            $regex = '/^' . str_replace('\\*', '.+', preg_quote($pattern, '/')) . '$/';
+
+            if (preg_match($regex, $host) === 1) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

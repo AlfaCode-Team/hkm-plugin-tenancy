@@ -13,6 +13,7 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\SessionPort;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Security\Identity;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
+use Plugins\Audit\API\Contracts\AuditServiceContract;
 use Plugins\Tenancy\API\Contracts\TenantConnectionResolverContract;
 use Plugins\Tenancy\API\Contracts\TenantHostRegistryContract;
 use Plugins\Tenancy\API\Contracts\TenantSelectionPolicyContract;
@@ -112,10 +113,11 @@ final class ActiveTenantStageTest extends TestCase
     }
 
     /** @return array{0: Response, 1: Request} the response, and the request the stage passed on */
-    private function dispatch(ModuleContainer $container, ?Identity $identity): array
+    private function dispatch(ModuleContainer $container, ?Identity $identity, string $handler = 'App\\EditionController@index'): array
     {
         $request = Request::build(method: 'GET', path: '/ajx/editions')
             ->withAttribute('route_host', 'app.example.test')
+            ->withAttribute('route_entry', ['handler' => $handler])
             ->withContainer($container);
 
         if ($identity !== null) {
@@ -294,5 +296,141 @@ final class ActiveTenantStageTest extends TestCase
 
         self::assertNull($this->routedTo, 'the host scope is already correct — no rebind needed');
         self::assertSame(self::HOST, $seen->identity()->tenantId);
+    }
+
+    // ── TENANCY_SELECTION_HOSTS ─────────────────────────────────────────────
+
+    protected function tearDown(): void
+    {
+        unset($_ENV['TENANCY_SELECTION_HOSTS']);
+    }
+
+    public function test_a_selection_is_not_applied_on_a_host_outside_the_allow_list(): void
+    {
+        // The dispatch fixture browses app.example.test; only the organiser
+        // console is allowed, so the stored choice must be inert here.
+        $_ENV['TENANCY_SELECTION_HOSTS'] = 'organizer.*';
+        $container = $this->container($this->session($this->stored(self::CHILD, 'user-1', self::HOST)), 'owner');
+
+        [, $seen] = $this->dispatch($container, $this->user());
+
+        self::assertNull($this->routedTo);
+        self::assertSame(self::HOST, $seen->identity()->tenantId);
+        // No anchor published either, which is what makes the controller
+        // refuse to record a choice on this host.
+        self::assertNull($seen->attribute('tenant_host'));
+    }
+
+    public function test_a_selection_is_applied_on_a_host_the_allow_list_names(): void
+    {
+        $_ENV['TENANCY_SELECTION_HOSTS'] = 'organizer.*, app.*';
+        $container = $this->container($this->session($this->stored(self::CHILD, 'user-1', self::HOST)), 'owner');
+
+        [, $seen] = $this->dispatch($container, $this->user());
+
+        self::assertSame(self::CHILD, $this->routedTo);
+        self::assertSame(self::CHILD, $seen->identity()->tenantId);
+    }
+
+    public function test_host_patterns_match_whole_hostnames_only(): void
+    {
+        $_ENV['TENANCY_SELECTION_HOSTS'] = 'app.*,*.brand.test,exact.test';
+
+        self::assertTrue(ActiveTenantStage::hostAllowed('app.africavoting.local'));
+        self::assertTrue(ActiveTenantStage::hostAllowed('organizer.brand.test'));
+        self::assertTrue(ActiveTenantStage::hostAllowed('exact.test'));
+        self::assertFalse(ActiveTenantStage::hostAllowed('africavoting.local'));
+        self::assertFalse(ActiveTenantStage::hostAllowed('myapp.africavoting.local'));
+        self::assertFalse(ActiveTenantStage::hostAllowed('brand.test'));
+        self::assertFalse(ActiveTenantStage::hostAllowed('notexact.test'));
+        self::assertFalse(ActiveTenantStage::hostAllowed(''));
+    }
+
+    public function test_an_unset_allow_list_keeps_every_host(): void
+    {
+        self::assertTrue(ActiveTenantStage::hostAllowed('anything.example'));
+    }
+
+    // ── the switch endpoint and the child-side audit record ─────────────────
+
+    /** @var list<array{0: string, 1: string}> action, tenant */
+    private array $visits = [];
+
+    private function withAudit(ModuleContainer $container): ModuleContainer
+    {
+        $audit = $this->createStub(AuditServiceContract::class);
+        $audit->method('record')->willReturnCallback(function (string $a, ?string $u, ?string $t): void {
+            $this->visits[] = [$a, (string) $t];
+        });
+        $container->instance(AuditServiceContract::class, $audit);
+
+        return $container;
+    }
+
+    public function test_the_switch_endpoint_itself_is_left_at_the_host_scope(): void
+    {
+        $container = $this->withAudit($this->container($this->session($this->stored(self::CHILD, 'user-1', self::HOST)), 'owner'));
+
+        [, $seen] = $this->dispatch($container, $this->user(), 'Plugins\\Tenancy\\Infrastructure\\Http\\Controllers\\ActiveTenantController@activate');
+
+        self::assertNull($this->routedTo);
+        self::assertSame(self::HOST, $seen->identity()->tenantId);
+        self::assertSame(self::HOST, $seen->attribute('tenant_host'));
+        self::assertSame([], $this->visits);
+    }
+
+    public function test_the_first_request_inside_records_one_visit_in_the_entered_trail(): void
+    {
+        $session   = $this->session($this->stored(self::CHILD, 'user-1', self::HOST));
+        $container = $this->withAudit($this->container($session, 'observer'));
+
+        $this->dispatch($container, $this->user());
+        $this->dispatch($container, $this->user());
+        $this->dispatch($container, $this->user());
+
+        self::assertSame([['tenant.switch.visit', self::CHILD]], $this->visits);
+    }
+
+    public function test_a_fresh_entry_is_recorded_again_even_into_the_same_tenant(): void
+    {
+        $session   = $this->session($this->stored(self::CHILD, 'user-1', self::HOST));
+        $container = $this->withAudit($this->container($session, 'observer'));
+
+        $this->dispatch($container, $this->user());
+        (new ActiveTenantStore(session: $session))->write(self::CHILD, 'user-1', self::HOST);
+        $this->dispatch($container, $this->user());
+
+        self::assertCount(2, $this->visits);
+    }
+
+    public function test_a_refused_selection_records_no_visit(): void
+    {
+        $container = $this->withAudit($this->container($this->session($this->stored(self::CHILD, 'user-1', self::HOST)), null));
+
+        $this->dispatch($container, $this->user());
+
+        self::assertSame([], $this->visits);
+    }
+
+    public function test_an_unavailable_selection_is_named_rather_than_silently_dropped(): void
+    {
+        $container = $this->container($this->session($this->stored(self::CHILD, 'user-1', self::HOST)), 'owner');
+        $resolver = $this->createStub(TenantConnectionResolverContract::class);
+        $resolver->method('for')->willThrowException(new \Plugins\Tenancy\Domain\Exceptions\TenantUnavailableException(self::CHILD));
+        $container->instance(TenantConnectionResolverContract::class, $resolver);
+
+        [, $seen] = $this->dispatch($container, $this->user());
+
+        self::assertSame(self::HOST, $seen->identity()->tenantId);
+        self::assertSame(self::CHILD, $seen->attribute('tenant_unavailable'));
+    }
+
+    public function test_only_the_plugin_controller_itself_is_treated_as_the_switch_endpoint(): void
+    {
+        $container = $this->container($this->session($this->stored(self::CHILD, 'user-1', self::HOST)), 'owner');
+
+        [, $seen] = $this->dispatch($container, $this->user(), 'App\\Http\\MyActiveTenantController@index');
+
+        self::assertSame(self::CHILD, $seen->identity()->tenantId);
     }
 }

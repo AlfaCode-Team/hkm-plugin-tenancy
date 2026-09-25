@@ -130,6 +130,10 @@ final readonly class ActiveTenantStore
 
         $this->put($hostTenantId, $payload);
 
+        // A new choice is a new entry: the next request inside it must be
+        // recorded, even if it is the same tenant as last time.
+        $this->forgetAudited($hostTenantId);
+
         // Encrypted by the jar, and HttpOnly so no script can read which tenant
         // an operator is inside — a small leak, but a free one to close.
         $this->cookies?->queue($this->cookieName, $payload, $this->cookieTtl);
@@ -138,6 +142,8 @@ final readonly class ActiveTenantStore
     /** Forget the choice — the "exit" half of the switcher, and the logout hook. */
     public function clear(string $hostTenantId): void
     {
+        $this->forgetAudited($hostTenantId);
+
         try {
             $this->session?->forget($this->key($hostTenantId));
         } catch (Throwable) {
@@ -146,6 +152,43 @@ final readonly class ActiveTenantStore
         }
 
         $this->cookies?->forget($this->cookieName);
+    }
+
+    /**
+     * Which tenant's entry has already been written to that tenant's own audit
+     * trail during this selection — so ActiveTenantStage records a visit ONCE
+     * per entry rather than on every request. Session-only: with no session
+     * there is nowhere to remember it, and the stage then records nothing
+     * rather than one row per request.
+     */
+    public function audited(string $hostTenantId): ?string
+    {
+        if ($this->session === null) {
+            return null;
+        }
+
+        try {
+            return (string) ($this->session->get($this->key($hostTenantId) . '.audited', '') ?? '');
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    public function markAudited(string $hostTenantId, string $tenantId): void
+    {
+        try {
+            $this->session?->put($this->key($hostTenantId) . '.audited', $tenantId);
+        } catch (Throwable) {
+            // Worst case the next request records the visit again.
+        }
+    }
+
+    private function forgetAudited(string $hostTenantId): void
+    {
+        try {
+            $this->session?->forget($this->key($hostTenantId) . '.audited');
+        } catch (Throwable) {
+        }
     }
 
     /**

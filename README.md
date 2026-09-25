@@ -157,9 +157,50 @@ re-derived from a child the caller has already switched into and turned into a
 chain. Anything that must stay fleet-level (the switcher, a list of children)
 reads that attribute rather than `tenant`.
 
+When a permitted selection cannot be applied because its database is
+unavailable (suspended, gone, still provisioning), the request stays on the
+host's scope, the choice is kept, and the stage sets `tenant_unavailable` to the
+selected id — so a UI can say so instead of silently showing the host.
+
+### Every switch is audited — on both sides
+
+A policy may grant access without a seat, and such a visitor never appears in
+the entered tenant's member list — so each switch leaves a record on both sides,
+through Audit's `AuditServiceContract`, with `{host_tenant, tenant, role}` meta:
+
+| Action | Written by | Lands in the trail of |
+|---|---|---|
+| `tenant.switch.enter` / `tenant.switch.exit` | `ActiveTenantController` | the tenant owning the hostname (operator side) |
+| `tenant.switch.visit` | `ActiveTenantStage`, first request inside, once per entry | the tenant entered |
+
+Two writers because Audit writes through the request's `DatabasePort`: the
+switch endpoint always runs at the host's scope (the stage never applies a
+selection to it), and only a request already inside the entered tenant can reach
+that tenant's trail. The visit record needs `audit.trail` in that request's
+graph — make it essential if you want it on every route. A refused switch
+records nothing; every write is best-effort, so an audit outage never blocks
+switching.
+
+### Restrict switching to the consoles — `TENANCY_SELECTION_HOSTS`
+
+A selection rescopes **everything** on the host it applies to. On a public site
+that means votes, checkouts and signups landing in whichever tenant an operator
+last looked at. Set the hosts that should offer switching:
+
+```dotenv
+TENANCY_SELECTION_HOSTS=app.*,organizer.*
+```
+
+Comma-separated; `*` matches any run of characters and patterns match the whole
+hostname (`app.*` matches `app.brand.com`, not `myapp.brand.com`). Outside the
+list the stage applies no selection and publishes no `tenant_host`, and the
+endpoint answers 404 rather than storing a choice with no anchor. Unset keeps
+the historical behaviour — every host.
+
 | Var | Default | Effect |
 |---|---|---|
 | `TENANCY_ACTIVE_SELECTION` | `true` | master switch for the stage and the routes |
+| `TENANCY_SELECTION_HOSTS` | *(every host)* | hostname patterns where switching is offered |
 | `TENANCY_SELECTION_COOKIE` | `hkm_tsel_v01` | cookie name used only where there is no session |
 | `TENANCY_SELECTION_TTL` | `0` | cookie lifetime in seconds; `0` = session cookie |
 
