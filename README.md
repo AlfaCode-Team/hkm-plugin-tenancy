@@ -125,6 +125,39 @@ ever echoes the hostname into an unverified, unbound grant of another tenant's
 database, surviving logout. The selection therefore uses its own keys and is
 consumed at 24, where the user is known.
 
+### The tenant hint names its user — `TenantHintStage` (23)
+
+`hkm_tnat_v01` is `{"t": tenant, "u": user}`, encrypted by the cookie jar. It used
+to be written by `TenantContextStage` at 10, where a session user is still
+anonymous, so every hint said `u: ""`. It is now written at **23**, after
+`SessionAuthStage`, with the real Identity, and only when it changes:
+
+```
+10  Tenancy   TenantContextStage   READS the hint (honoured only for the principal it names)
+22  Auth      SessionAuthStage     attaches the Identity
+23  Tenancy   TenantHintStage      WRITES {t: resolved tenant, u: that Identity}
+24  Tenancy   ActiveTenantStage    applies the user's choice
+```
+
+A signed-in user's hint is stamped with their id; a browser that signs out gets
+it re-minted for the guest. At 10 a hint naming a user is not honoured, because
+nothing has yet confirmed who is asking, and the host decides as before. The hint
+never chooses a database for someone it was not minted for, and it grants nothing:
+every tenant it points at is re-resolved through the registry.
+
+### A session changing hands leaves no organisation behind
+
+Tenancy listens to two Auth events by name, with no Auth class involved:
+
+| Event | Tenancy does |
+|---|---|
+| `auth.session.reset` — a signed-out visitor opened a sign-in or sign-up page (Auth's `fresh-session` filter) | forgets every active-organisation choice: session keys for every brand, and the `hkm_tsel_v01` cookie |
+| `auth.session.started` — the first request after a sign-in (`/auth/session/start`) | the same, then stamps the tenant hint with the signed-in user and the host's tenant |
+
+So an expired session, or a browser someone else used, cannot carry a previous
+choice into the next sign-in. Without Auth neither event fires, and nothing here
+changes.
+
 ### The policy is the seam
 
 `ActiveTenantStage` trusts the store for nothing. On **every** request it asks

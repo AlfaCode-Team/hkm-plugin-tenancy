@@ -155,6 +155,28 @@ final readonly class ActiveTenantStore
     }
 
     /**
+     * Forget every choice this browser holds, for every brand — the session
+     * entries and the cookie alike. For the moments a session changes hands
+     * (a sign-in page, a completed sign-in), where "which host" is not the
+     * question: nothing chosen before should survive.
+     */
+    public function reset(): void
+    {
+        try {
+            foreach (array_keys($this->session?->all() ?? []) as $key) {
+                if (is_string($key) && str_starts_with($key, self::SESSION_KEY . '.')) {
+                    $this->session?->forget($key);
+                }
+            }
+        } catch (Throwable) {
+            // Same reasoning as clear(): read() still refuses a value stamped
+            // for someone else.
+        }
+
+        $this->cookies?->forget($this->cookieName);
+    }
+
+    /**
      * Which tenant's entry has already been written to that tenant's own audit
      * trail during this selection — so ActiveTenantStage records a visit ONCE
      * per entry rather than on every request. Session-only: with no session

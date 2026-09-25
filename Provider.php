@@ -324,6 +324,29 @@ final class Provider implements ModuleContract
                 cookieTtl: self::intEnv('TENANCY_SELECTION_TTL', 0),
             ));
 
+        // What happens to the active organisation and the tenant hint when a
+        // session changes hands. bind(), not bindInternal(): the listeners below
+        // are resolved by the EventBus from outside every module scope — see the
+        // AssignTenantMembershipOnUserRegistered binding for how that fails.
+        $container->bind(\Plugins\Tenancy\Infrastructure\TenantSession::class, static fn($c): \Plugins\Tenancy\Infrastructure\TenantSession =>
+            new \Plugins\Tenancy\Infrastructure\TenantSession(
+                selection: $c->make(ActiveTenantStore::class),
+                hint: $c->has(CookieJar::class) ? new \Plugins\Tenancy\Infrastructure\TenantHint($c->make(CookieJar::class)) : null,
+                // The HOST's tenant: `tenant.host` exists only while switched
+                // into a child, `tenant.current` otherwise names the host.
+                hostTenant: static fn (): string => match (true) {
+                    $c->has('tenant.host')    => (string) $c->make('tenant.host'),
+                    $c->has('tenant.current') => (string) $c->make('tenant.current'),
+                    default                   => '',
+                },
+            ));
+
+        $container->bind(\Plugins\Tenancy\Infrastructure\Listeners\ResetTenantSelectionOnAuthPage::class, static fn($c) =>
+            new \Plugins\Tenancy\Infrastructure\Listeners\ResetTenantSelectionOnAuthPage($c->make(\Plugins\Tenancy\Infrastructure\TenantSession::class)));
+
+        $container->bind(\Plugins\Tenancy\Infrastructure\Listeners\StartTenantSessionOnSignIn::class, static fn($c) =>
+            new \Plugins\Tenancy\Infrastructure\Listeners\StartTenantSessionOnSignIn($c->make(\Plugins\Tenancy\Infrastructure\TenantSession::class)));
+
         $container->bindInternal(ActiveTenantController::class, static fn($c): ActiveTenantController =>
             new ActiveTenantController(
                 $c->make(TenantSelectionPolicyContract::class),
@@ -433,6 +456,11 @@ final class Provider implements ModuleContract
         if (!self::controlPlane()) {
             $http->hook('after.load', TenantContextStage::class, priority: 10);
 
+            // Writes the tenant hint the stage above reads, once the real
+            // Identity exists (SessionAuthStage, 22) — see TenantHint for why
+            // the stage at 10 must not write it itself.
+            $http->hook('after.load', \Plugins\Tenancy\Infrastructure\Http\Stages\TenantHintStage::class, priority: \Plugins\Tenancy\Infrastructure\Http\Stages\TenantHintStage::PRIORITY);
+
             // Applies a signed-in user's CHOSEN tenant, which the stage above
             // structurally cannot: at priority 10 the session is not open and
             // no Identity exists, so `Identity.tenantId` is always '' and its
@@ -453,6 +481,13 @@ final class Provider implements ModuleContract
         // payload. The project binds the listener in the CoreContainer with a
         // central-connection MembershipWriter (EventBus resolves listeners there).
         $events->subscribe('user.registered', \Plugins\Tenancy\Application\Listeners\AssignTenantMembershipOnUserRegistered::class);
+
+        // Auth announces the two moments a browser session changes hands. By
+        // NAME — Tenancy needs no Auth class, and without Auth these never fire.
+        //   auth.session.reset   → a sign-in/sign-up page: drop the active organisation
+        //   auth.session.started → a completed sign-in: fresh selection, hint stamped with the user
+        $events->subscribe('auth.session.reset', \Plugins\Tenancy\Infrastructure\Listeners\ResetTenantSelectionOnAuthPage::class);
+        $events->subscribe('auth.session.started', \Plugins\Tenancy\Infrastructure\Listeners\StartTenantSessionOnSignIn::class);
 
         // The tenant:create / tenants:migrate provisioning commands are SaaS
         // control-plane tools (they CREATE DATABASE, encrypt credentials, drive

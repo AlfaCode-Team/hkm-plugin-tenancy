@@ -16,6 +16,7 @@ use Plugins\Tenancy\Infrastructure\Http\Identification\TenantIdentifier;
 use Plugins\Tenancy\Domain\Exceptions\TenantUnavailableException;
 use Plugins\Tenancy\Domain\Exceptions\UnknownTenantException;
 use Plugins\Tenancy\Infrastructure\TenantConnectionResolver;
+use Plugins\Tenancy\Infrastructure\TenantHint;
 
 /**
  * TenantContextStage — binds the per-request tenant database.
@@ -50,9 +51,6 @@ use Plugins\Tenancy\Infrastructure\TenantConnectionResolver;
  */
 final class TenantContextStage implements HttpStageContract
 {
-    /** Encrypted, user-bound cookie remembering the active tenant (a HINT, never authority). */
-    private const COOKIE = 'hkm_tnat_v01';
-
     /**
      * The collaborators are request-scoped (bound in the module's ModuleContainer
      * by Provider::register), but this stage is an app-lifetime after.load hook
@@ -173,10 +171,8 @@ final class TenantContextStage implements HttpStageContract
             );
         }
 
-        $jar = $container->has(CookieJar::class) ? $container->make(CookieJar::class) : null;
+        $hint   = $container->has(CookieJar::class) ? new TenantHint($container->make(CookieJar::class)) : null;
         $userId = $request->identity()?->userId ?? '';
-
-
 
         // ── Resolution order: SIGNED CLAIM > cookie hint > identifier ────────
         //
@@ -195,7 +191,7 @@ final class TenantContextStage implements HttpStageContract
         $fromCookie = false;
 
         if ($tenantId === '') {
-            $tenantId   = $this->rememberedTenant($jar, $request, $userId);
+            $tenantId   = $this->rememberedTenant($hint, $request, $userId);
             $fromCookie = $tenantId !== '';
         }
 
@@ -262,8 +258,8 @@ final class TenantContextStage implements HttpStageContract
             if (!$isMember) {
                 // Drop the stale hint so the user is not trapped bouncing off a
                 // tenant they no longer belong to.
-                if ($fromCookie && $jar !== null) {
-                    $jar->forget(self::COOKIE);
+                if ($fromCookie) {
+                    $hint?->forget();
                 }
 
                 // 404, not 403: whether a tenant exists is itself information.
@@ -278,8 +274,8 @@ final class TenantContextStage implements HttpStageContract
             $db = $resolver->for($tenantId);
         } catch (UnknownTenantException) {
             // A stale hint can point at a deleted tenant — drop it, don't trap the user.
-            if ($fromCookie && $jar !== null) {
-                $jar->forget(self::COOKIE);
+            if ($fromCookie) {
+                $hint?->forget();
             }
             return Response::notFound('Tenant not found.');
         } catch (TenantUnavailableException $e) {
@@ -291,8 +287,8 @@ final class TenantContextStage implements HttpStageContract
             // re-selecting a reactivated tenant through the picker re-mints the
             // cookie, which is a small price for not trapping the user on a
             // known-bad hint in the meantime.
-            if ($fromCookie && $jar !== null) {
-                $jar->forget(self::COOKIE);
+            if ($fromCookie) {
+                $hint?->forget();
             }
             return $this->unavailable($e);
         }
@@ -309,12 +305,10 @@ final class TenantContextStage implements HttpStageContract
         // requires an OBJECT, so binding a bare string there throws a TypeError.
         $container->bind('tenant.current', static fn(): string => $tenantId);
 
-        // Remember the active tenant for next time — encrypted + bound to this
-        // user so it cannot be replayed across users. Still a hint: every request
-        // re-resolves through the registry/breaker above.
-        if ($jar !== null) {
-            $this->rememberTenant($jar, $tenantId, $userId);
-        }
+        // The hint for next time is written by TenantHintStage (23), not here:
+        // at priority 10 a session user's Identity does not exist yet, so a
+        // write here would stamp their hint with `u: ''` — one that matches
+        // everybody. See TenantHint.
 
         try {
             $response = $next($request);
@@ -359,50 +353,26 @@ final class TenantContextStage implements HttpStageContract
     }
 
     /**
-     * Read the remembered tenant from the encrypted cookie. Returns '' unless the
-     * cookie decrypts cleanly AND was minted for THIS principal — a cookie issued
-     * for another account can never be replayed, while a guest-minted cookie
-     * ('u' = '') still works for guests so public pages keep their selection.
+     * The remembered tenant, or '' unless the hint was minted for THIS
+     * principal — a hint issued for another account is never replayed, while a
+     * guest-minted one ('u' = '') still works for guests so public pages keep
+     * their selection.
+     *
+     * At this priority a session user is still anonymous (SessionAuthStage runs
+     * at 22), so for them only a guest-minted hint can match, and a hint that
+     * names them is left to the host identifier. That costs nothing in host
+     * mode, where the host decides anyway, and it keeps an unverified user id
+     * from choosing a database before anything has confirmed who is asking.
      */
-    private function rememberedTenant(?CookieJar $jar, Request $request, string $userId): string
+    private function rememberedTenant(?TenantHint $hint, Request $request, string $userId): string
     {
-        if ($jar === null) {
-            return '';
-        }
+        $data = $hint?->read($request);
 
-        $raw = $jar->read($request, self::COOKIE); // decrypted; null if absent/tampered
-
-        if ($raw === null) {
-            return '';
-        }
-
-        $data = json_decode($raw, true);
-
-        // Enforce the principal binding: the hint is only honoured by whoever it
-        // was minted for. A guest-minted hint ('u' = '') keeps working for
-        // guests — public pages don't require login — while a hint minted for
-        // one user is never replayed onto another user (or onto a guest after
-        // logout). Log-in flips the principal, so a fresh hint is re-minted.
-        $mintedFor = is_string($data['u'] ?? null) ? $data['u'] : '';
-        if (!is_string($data['t'] ?? null) || $mintedFor !== $userId) {
+        if ($data === null || $data['u'] !== $userId) {
             return '';
         }
 
         return $data['t'];
-    }
-
-    /** Queue the encrypted, user-bound tenant hint (flushed by QueuedCookiesStage). */
-    private function rememberTenant(CookieJar $jar, string $tenantId, string $userId): void
-    {
-        if ($jar->hasQueued(self::COOKIE)) {
-            return; // already written this request
-        }
-
-        $jar->queue(
-            self::COOKIE,
-            json_encode(['t' => $tenantId, 'u' => $userId]),
-            60 * 60 * 24 * 30, // 30 days
-        );
     }
 
     private function unavailable(TenantUnavailableException $e): Response
