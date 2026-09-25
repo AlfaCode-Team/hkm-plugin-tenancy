@@ -39,6 +39,12 @@ use Plugins\Tenancy\Application\Services\MembershipService;
 use Plugins\Tenancy\Application\Services\TenantAdminService;
 use Plugins\Tenancy\Application\Services\TenantHostService;
 use Plugins\Tenancy\Infrastructure\Dns\SystemDnsResolver;
+use Plugins\Cookie\Infrastructure\CookieJar;
+use Plugins\Tenancy\Infrastructure\ActiveTenantStore;
+use Plugins\Tenancy\API\Contracts\TenantSelectionPolicyContract;
+use Plugins\Tenancy\Application\Services\MembershipSelectionPolicy;
+use Plugins\Tenancy\Infrastructure\Http\Controllers\ActiveTenantController;
+use Plugins\Tenancy\Infrastructure\Http\Stages\ActiveTenantStage;
 use Plugins\Tenancy\Infrastructure\Http\Controllers\AuditLogController;
 use Plugins\Tenancy\Infrastructure\Http\Controllers\InvitationController;
 use Plugins\Tenancy\Infrastructure\Http\Controllers\SubTenantController;
@@ -294,6 +300,36 @@ final class Provider implements ModuleContract
         $container->bindInternal(SubTenantController::class, static fn($c): SubTenantController =>
             new SubTenantController($c->make(TenantAdminServiceContract::class)));
 
+        // ── active-tenant selection (browser sessions) ───────────────────────
+        //
+        // PUBLIC, and deliberately so: a project overrides this binding to
+        // widen who may switch where — the canonical case being "an admin of
+        // the parent may act inside its children", which no routing plugin can
+        // decide on a deployment's behalf. The default answers the only
+        // question this plugin's own data supports: do you hold a seat.
+        $container->bind(TenantSelectionPolicyContract::class, static fn($c): TenantSelectionPolicyContract =>
+            new MembershipSelectionPolicy($c->make(MembershipReader::class)));
+
+        // Session FIRST, cookie only where there is no session — see the store's
+        // docblock for why this must not reuse TenantContextStage's cookie.
+        // Both collaborators are optional: a deployment with neither simply has
+        // no switcher, rather than a boot failure.
+        $container->bind(ActiveTenantStore::class, static fn($c): ActiveTenantStore =>
+            new ActiveTenantStore(
+                session: $c->has(\AlfacodeTeam\PhpServicePlatform\Kernel\Ports\SessionPort::class)
+                    ? $c->make(\AlfacodeTeam\PhpServicePlatform\Kernel\Ports\SessionPort::class)
+                    : null,
+                cookies: $c->has(CookieJar::class) ? $c->make(CookieJar::class) : null,
+                cookieName: (string) (env('TENANCY_SELECTION_COOKIE') ?: 'hkm_tsel_v01'),
+                cookieTtl: self::intEnv('TENANCY_SELECTION_TTL', 0),
+            ));
+
+        $container->bindInternal(ActiveTenantController::class, static fn($c): ActiveTenantController =>
+            new ActiveTenantController(
+                $c->make(TenantSelectionPolicyContract::class),
+                $c->make(ActiveTenantStore::class),
+            ));
+
         // ── audit trail query (admin-facing read of the central audit_log) ───
         // Read counterpart to writing through Audit's published
         // AuditServiceContract — reading the trail back is gated to platform
@@ -392,6 +428,15 @@ final class Provider implements ModuleContract
         // Leave it false (the default) for any tenant-serving deployment.
         if (!self::controlPlane()) {
             $http->hook('after.load', TenantContextStage::class, priority: 10);
+
+            // Applies a signed-in user's CHOSEN tenant, which the stage above
+            // structurally cannot: at priority 10 the session is not open and
+            // no Identity exists, so `Identity.tenantId` is always '' and its
+            // membership re-check (guarded by `if ($userId !== '')`) never
+            // runs. This one sits after Auth's SessionAuthStage (22) and
+            // re-verifies the choice against the policy on EVERY request.
+            // See ActiveTenantStage's docblock for the full slot ordering.
+            $http->hook('after.load', ActiveTenantStage::class, priority: ActiveTenantStage::PRIORITY);
         }
 
         // Reusable declarative guard: a route that touches tenant-only tables

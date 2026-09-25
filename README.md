@@ -85,6 +85,84 @@ with `403` (audited `tenant.switch_denied`) and — because the Auth layer re-ch
 membership per request — also loses access on an already-issued token before it
 expires. `TENANCY_TOKEN_TTL` (default 3600s) sets the scoped-token lifetime.
 
+## Active tenant for BROWSER sessions (`TenantSelectionPolicyContract`)
+
+`POST /ajx/tenants/{id}/select` above re-mints a JWT. That is the right answer
+for a token client and no answer at all for a cookie session — the browser has
+nowhere to put the token, and the next page load arrives with the session it
+already had. These three routes are the session-shaped sibling (all behind
+`auth`):
+
+```
+GET    /ajx/tenant/active   → { host, active, selectable[] }   the switcher's data
+POST   /ajx/tenant/active   { "tenant": "…" }                  switch into one
+DELETE /ajx/tenant/active                                      back to the host's tenant
+```
+
+The choice is stored server-side (session first, an encrypted `hkm_tsel_v01`
+cookie only where there is no session) and applied by `ActiveTenantStage`.
+
+### Why a second stage, and why it is not the cookie `TenantContextStage` reads
+
+`TenantContextStage` registers at `after.load` priority **10**, where lower runs
+first:
+
+```
+10  Tenancy   TenantContextStage   picks the tenant, rebinds DatabasePort
+20  Session   StartSessionStage    opens the session
+22  Auth      SessionAuthStage     attaches the Identity
+24  Tenancy   ActiveTenantStage    applies the user's choice
+```
+
+At 10 there is no session and no Identity. So on a cookie-session deployment
+`Identity.tenantId` is always `''` and the host always decides — and the seat
+re-verification in that stage, guarded by `if ($userId !== '')`, never executes.
+Its `hkm_tnat_v01` hint inherits both problems: its `u` binding compares `''` to
+`''` and therefore matches every user, and nothing re-checks it.
+
+Writing a deliberate selection into that cookie would turn a hint that today only
+ever echoes the hostname into an unverified, unbound grant of another tenant's
+database, surviving logout. The selection therefore uses its own keys and is
+consumed at 24, where the user is known.
+
+### The policy is the seam
+
+`ActiveTenantStage` trusts the store for nothing. On **every** request it asks
+`TenantSelectionPolicyContract` whether this user may still act inside the
+selected tenant, and with what role. Returning `null` drops the selection. A
+revoked seat therefore stops working on the next request rather than whenever a
+cookie expires.
+
+The default, `MembershipSelectionPolicy`, answers the only question this
+plugin's data supports: do you hold an active, routable seat. Override the
+binding to widen it — the canonical case being *an admin of a parent tenant may
+act inside its children*, derived from `tenants.parent_tenant_id` rather than
+from membership rows that would otherwise have to be created per admin per child
+and revoked by hand:
+
+```php
+$container->bind(TenantSelectionPolicyContract::class, fn($c) => new MyHierarchyPolicy(...));
+```
+
+`roleFor()` returns the role carried **inside** the selection. The stage replaces
+the Identity's tenant id and role with it and empties permissions: a role is a
+statement about one tenant, and carrying one earned elsewhere into this scope is
+how a seat in one place quietly decides what happens in another. A policy that
+wants read-only access returns a role its application does not treat as
+privileged.
+
+`hostTenantId` — the tenant owning the hostname, published as the `tenant_host`
+request attribute — anchors any hierarchy rule, so "parent admin" cannot be
+re-derived from a child the caller has already switched into and turned into a
+chain. Anything that must stay fleet-level (the switcher, a list of children)
+reads that attribute rather than `tenant`.
+
+| Var | Default | Effect |
+|---|---|---|
+| `TENANCY_ACTIVE_SELECTION` | `true` | master switch for the stage and the routes |
+| `TENANCY_SELECTION_COOKIE` | `hkm_tsel_v01` | cookie name used only where there is no session |
+| `TENANCY_SELECTION_TTL` | `0` | cookie lifetime in seconds; `0` = session cookie |
+
 ## Invitations (`InvitationServiceContract`)
 
 Email-based onboarding that decouples "invited" from "has an account".
