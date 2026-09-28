@@ -401,7 +401,10 @@ final class Provider implements ModuleContract
         // binding's OWN scope onto the resolution stack while its factory runs, so
         // the $c->make(MembershipWriter::class) here still resolves as tenancy.
         $container->bind(AssignTenantMembershipOnUserRegistered::class, static fn($c): AssignTenantMembershipOnUserRegistered =>
-            new AssignTenantMembershipOnUserRegistered($c->make(MembershipWriter::class)));
+            new AssignTenantMembershipOnUserRegistered(
+                $c->make(MembershipWriter::class),
+                (string) (env('TENANCY_SIGNUP_ROLE') ?: AssignTenantMembershipOnUserRegistered::DEFAULT_ROLE),
+            ));
 
         // singleton() — see the TenantHostServiceContract binding above for why.
         $container->singleton(InvitationServiceContract::class, static fn($c): InvitationServiceContract =>

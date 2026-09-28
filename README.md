@@ -361,6 +361,7 @@ it fleet-migrates every active tenant by default.
 | `TENANCY_BREAKER_COOLDOWN` | `30` | breaker open window (s) |
 | `TENANCY_TEMPLATE_PATH` | bundled | tenant template migrations path |
 | `TENANCY_MEMBERSHIP_CACHE_TTL` | `10` | per-request seat re-check cache TTL (s) |
+| `TENANCY_SIGNUP_ROLE` | `member` | role of the seat a self-signup gets in its originating tenant; `owner`/`admin` (or a value `user_tenants.role` cannot hold) fall back to `member` |
 | `TENANCY_MAX_WARM_CONNECTIONS` | `200` | warm tenant connections held per worker |
 | `TENANCY_MAX_HOSTS_PER_TENANT` | — | cap on custom hosts a tenant may claim |
 | `TENANCY_MAX_SUB_TENANTS_PER_PARENT` | — | cap on sub-tenants under one parent |

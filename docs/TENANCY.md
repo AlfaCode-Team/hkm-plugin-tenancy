@@ -186,13 +186,17 @@ integration event (User's transactional outbox, relayed by `user:outbox:relay`):
 self-signup on tenant host → RegisterUserDTO reads request 'tenant' attribute
   → UserRegisteredIntegrationEvent carries tenantId (persisted in the outbox)
   → Tenancy's AssignTenantMembershipOnUserRegistered listener (subscribed in boot())
-  → MembershipWriter::upsertActive(userId, tenantId, 'member')   [idempotent]
+  → MembershipWriter::upsertActive(userId, tenantId, TENANCY_SIGNUP_ROLE)   [idempotent]
 ```
 
 - The listener resolves from the **CoreContainer** (no request context) — so the
   tenant MUST ride on the event payload, never re-derived at relay time.
 - The project binds the listener in the CoreContainer with a central-connection
   `MembershipWriter` (the EventBus resolves listeners there). See [Events](https://github.com/AlfaCode-Team/hkm-kernel/blob/main/docs/guides/08_EVENTS.md).
+- The role is `TENANCY_SIGNUP_ROLE` (default `member`) — e.g. `publisher` for a
+  site where everyone who signs up may publish. Self-signup is open to anyone,
+  so `owner` and `admin` are never granted this way: they, and any value the
+  VARCHAR(32) `role` column cannot hold, fall back to `member`.
 - Assignment is **eventually consistent** (lands when the relay runs) and
   **idempotent** (`upsertActive` upserts on `(user_id, tenant_id)`).
 
